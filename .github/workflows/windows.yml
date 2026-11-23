@@ -29,6 +29,11 @@ jobs:
         run: xvfb-run -a python -m unittest discover -s tests -p test_interface.py -v
         env:
           PASSVAULT_TESTAR_GUI: "1"
+      - name: Clipboard Win32 em sessão descartável
+        if: runner.os == 'Windows'
+        run: python -m unittest discover -s tests -p test_clipboard_windows.py -v
+        env:
+          PASSVAULT_CLIPBOARD_ISOLADO: "1"
       - run: python -m passvault --self-test
       - run: python tests/portabilidade.py criar dados-ci
       - uses: actions/upload-artifact@v4
@@ -74,3 +79,43 @@ jobs:
           name: PassVault-Windows
           path: dist/PassVault.exe
           if-no-files-found: error
+
+  distribuicao:
+    needs: executavel
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PassVault-Windows
+          path: dist
+      - name: Abrir o artefato em runner novo e conferir os metadados
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist/PassVault.exe).Path
+          $arquivo = Get-Item $exe
+          if ($arquivo.VersionInfo.FileVersion -ne '1.1.0.0') { throw 'Versao incorreta' }
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:PYTHONPATH = $null
+          $env:PYTHONHOME = $null
+          $env:TCL_LIBRARY = $null
+          $env:TK_LIBRARY = $null
+          $env:PASSVAULT_HOME = Join-Path $env:RUNNER_TEMP 'teste-distribuicao'
+          $teste = Start-Process $exe -ArgumentList '--self-test' -PassThru -Wait
+          if ($teste.ExitCode -ne 0) { throw 'Autoteste do artefato falhou' }
+          $app = Start-Process $exe -PassThru
+          try {
+            $limite = (Get-Date).AddSeconds(45)
+            do {
+              Start-Sleep -Milliseconds 500
+              $janela = Get-Process -Name PassVault -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -eq $exe -and $_.MainWindowTitle -eq 'PassVault' } |
+                Select-Object -First 1
+            } until ($janela -or $app.HasExited -or (Get-Date) -gt $limite)
+            if (-not $janela) { throw 'Janela principal do executavel indisponivel' }
+            if (-not $janela.CloseMainWindow()) { throw 'Falha ao fechar a janela' }
+            if (-not $app.WaitForExit(15000) -or $app.ExitCode -ne 0) { throw 'Falha ao sair' }
+          } finally {
+            if (-not $app.HasExited) { $app.Kill($true) }
+          }
+          Get-FileHash -Algorithm SHA256 $exe
+          Write-Output "$($arquivo.Length) bytes"

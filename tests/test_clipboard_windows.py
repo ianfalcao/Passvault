@@ -1,5 +1,6 @@
 """API Win32 simulada, sem acesso ao clipboard pessoal."""
 import ctypes
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -82,3 +83,37 @@ class ClipboardNativo(unittest.TestCase):
             api.seq += 1
             clip.limpar()
             self.assertEqual(janela.clipboard_clear.call_count, 1)
+
+
+@unittest.skipUnless(os.name == "nt" and
+                     os.getenv("PASSVAULT_CLIPBOARD_ISOLADO") == "1",
+                     "Requer clipboard descartável em um runner Windows")
+class ClipboardWindowsIntegracao(unittest.TestCase):
+    def test_prazo_conteudo_externo_e_limpeza_imediata(self):
+        import tkinter as tk
+
+        raiz = tk.Tk()
+        raiz.withdraw()
+        clip = Clipboard(raiz, lambda mensagem: None)
+        try:
+            clip.copiar("amostra-sintética")
+            self.assertEqual(clip._modo, "windows")
+            self.assertEqual(raiz.clipboard_get(), "amostra-sintética")
+            fim = tk.BooleanVar(raiz)
+            raiz.after(31000, lambda: fim.set(True))
+            raiz.wait_variable(fim)
+            self.assertEqual(clip._modo, "")
+            self.assertFalse(ctypes.windll.user32.IsClipboardFormatAvailable(13))
+            clip.copiar("segunda-amostra")
+            raiz.clipboard_clear()
+            raiz.clipboard_append("conteúdo posterior")
+            raiz.update()
+            clip.limpar()
+            self.assertEqual(raiz.clipboard_get(), "conteúdo posterior")
+            clip.copiar("terceira-amostra")
+            clip.limpar()
+            self.assertFalse(ctypes.windll.user32.IsClipboardFormatAvailable(13))
+        finally:
+            clip.limpar()
+            raiz.clipboard_clear()
+            raiz.destroy()

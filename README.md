@@ -2,6 +2,10 @@
 
 Gerenciador de senhas local para Windows 10/11 e Linux. Cada operação salva as contas em um cofre cifrado PVLT v1. O aplicativo funciona offline e oferece busca, gerador de senhas, importação de JSON, backups e restauração.
 
+| Tema claro | Tema escuro |
+| --- | --- |
+| ![Contas fictícias no tema claro](docs/tema-claro.png) | ![Contas fictícias no tema escuro](docs/tema-escuro.png) |
+
 ## Abrir o aplicativo
 
 No Windows, extraia `PassVault.exe` do artefato **PassVault-Windows** da execução desejada em **GitHub → Actions → PassVault Linux e Windows**. Abra o executável pelo Explorer. O pacote inclui Python, Tcl/Tk e a biblioteca criptográfica.
