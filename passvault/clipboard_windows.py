@@ -16,6 +16,7 @@ class ApiWindows:
             (user, "CloseClipboard", [], w.BOOL),
             (user, "EmptyClipboard", [], w.BOOL),
             (user, "SetClipboardData", [w.UINT, w.HANDLE], w.HANDLE),
+            (user, "GetClipboardOwner", [], w.HWND),
             (user, "GetClipboardSequenceNumber", [], w.DWORD),
             (user, "RegisterClipboardFormatW", [w.LPCWSTR], w.UINT),
             (kernel, "GlobalAlloc", [w.UINT, c.c_size_t], w.HGLOBAL),
@@ -76,10 +77,13 @@ class ClipboardWindows:
                     self._publicar(formato, bytes(4))
             if not self._publicar(13, texto.encode("utf-16-le") + bytes(2)):
                 return False
-            self.sequencia = self.api.GetClipboardSequenceNumber()
-            return True
         finally:
             self.api.CloseClipboard()
+        # O fechamento publica formatos sintetizados e pode avançar a sequência.
+        # Validar o proprietário depois da leitura protege uma cópia concorrente.
+        sequencia = self.api.GetClipboardSequenceNumber()
+        self.sequencia = sequencia if self.api.GetClipboardOwner() == self.janela else None
+        return True
 
     def limpar(self) -> bool:
         if not self._abrir():

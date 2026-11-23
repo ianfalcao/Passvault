@@ -13,11 +13,18 @@ class ApiFalsa:
         self.blocos = {}
         self.formatos = {}
         self.seq = 1
-        self.CloseClipboard = Mock()
+        self.GetClipboardOwner = Mock(return_value=987)
+        self.CloseClipboard = Mock(side_effect=self.finalizar)
+        self.pendente = False
         self.OpenClipboard = Mock(return_value=True)
         self.GlobalUnlock = Mock()
         self.GlobalFree = Mock()
         self.RegisterClipboardFormatW = Mock(side_effect=(21, 22, 23))
+
+    def finalizar(self):
+        if self.pendente:
+            self.seq += 1
+            self.pendente = False
 
     def GlobalAlloc(self, flags, n):
         buf = ctypes.create_string_buffer(n)
@@ -29,6 +36,7 @@ class ApiFalsa:
         return handle
 
     def SetClipboardData(self, formato, handle):
+        self.pendente = True
         self.formatos[formato] = self.blocos[handle].raw
         self.seq += 1
         return handle
@@ -98,12 +106,15 @@ class ClipboardWindowsIntegracao(unittest.TestCase):
         try:
             clip.copiar("amostra-sintética")
             self.assertEqual(clip._modo, "windows")
+            seq_publicada = clip._win.sequencia
             self.assertEqual(raiz.clipboard_get(), "amostra-sintética")
+            seq_leitura = clip._win.api.GetClipboardSequenceNumber()
             fim = tk.BooleanVar(raiz)
             raiz.after(31000, lambda: fim.set(True))
             raiz.wait_variable(fim)
             self.assertEqual(clip._modo, "")
-            self.assertFalse(ctypes.windll.user32.IsClipboardFormatAvailable(13))
+            self.assertFalse(ctypes.windll.user32.IsClipboardFormatAvailable(13),
+                             (seq_publicada, seq_leitura, clip._win.api.GetClipboardSequenceNumber()))
             clip.copiar("segunda-amostra")
             raiz.clipboard_clear()
             raiz.clipboard_append("conteúdo posterior")
