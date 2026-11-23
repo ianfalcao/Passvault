@@ -1,0 +1,76 @@
+name: PassVault Linux e Windows
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUTF8: "1"
+  PYTHONPATH: .
+jobs:
+  testar:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Fluxo gráfico com cofre temporário
+        if: runner.os == 'Windows'
+        run: python -m unittest discover -s tests -p test_interface.py -v
+        env:
+          PASSVAULT_TESTAR_GUI: "1"
+      - name: Fluxo gráfico em display isolado
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m unittest discover -s tests -p test_interface.py -v
+        env:
+          PASSVAULT_TESTAR_GUI: "1"
+      - run: python -m passvault --self-test
+      - run: python tests/portabilidade.py criar dados-ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sintetico-${{ runner.os }}
+          path: dados-ci/vault.enc
+          retention-days: 1
+  portabilidade:
+    needs: testar
+    strategy:
+      matrix:
+        include:
+          - {os: ubuntu-latest, origem: Windows}
+          - {os: windows-latest, origem: Linux}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: sintetico-${{ matrix.origem }}
+          path: dados-ci
+      - run: python tests/portabilidade.py conferir dados-ci
+  executavel:
+    needs: portabilidade
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - shell: pwsh
+        run: ./build_windows.ps1
+      - shell: pwsh
+        run: |
+          $p = Start-Process dist/PassVault.exe -ArgumentList '--self-test' -Wait -PassThru
+          exit $p.ExitCode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PassVault-Windows
+          path: dist/PassVault.exe
+          if-no-files-found: error

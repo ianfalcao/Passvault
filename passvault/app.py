@@ -4,10 +4,14 @@ import logging
 import time
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, ttk
+from tkinter import font, messagebox, ttk
 from typing import Callable
 
-from . import __version__
+from . import __version__, plataforma as so
+from .config import Config, GEOMETRIA
+from .ui.theme import Tema, ESCURA
+from .ui.widgets import (BarraForca, BotaoIcone, BotaoPrimario, CampoBusca, Cartao,
+                         Confirmar, EstadoVazio, Toast, abreviar)
 from .clipboard import Clipboard
 from .constants import MS_VERIFICACAO, SEGUNDOS_BLOQUEIO
 from .dialogs import Editor, Gerar, Importar, Restaurar, TrocarSenha, alternar, campo_senha
@@ -26,17 +30,33 @@ class Aplicacao:
         self.clip = Clipboard(raiz, self.status)
         self._atividade = time.monotonic()
         self._geracao = 0
-        self._mensagem = tk.StringVar(raiz)
         self._resumo = tk.StringVar(raiz)
-        self._prazo_status: str | None = None
         self._busca = tk.StringVar(raiz)
         self._busca.trace_add("write", lambda *_: self.atualizar() if self.cofre.aberto else None)
+        self.config = Config.ler(disco.pasta)
+        self.paines = None
+        self.toast = None
         self._ordem = "service"
         self._inversa = False
         raiz.title("PassVault")
-        raiz.geometry("1000x650")
-        raiz.minsize(860, 560)
-        ttk.Style(raiz).theme_use("clam")
+        if so.WINDOWS:
+            raiz.tk.call("tk", "scaling", raiz.winfo_fpixels("1i") / 72)
+        self.tema = Tema(raiz, self.config.tema)
+        self.logo = tk.PhotoImage(file=str(so.resource_path("logo.png")))
+        self.icone = tk.PhotoImage(file=str(so.resource_path("passvault.png")))
+        if so.WINDOWS:
+            raiz.iconbitmap(str(so.resource_path("passvault.ico")))
+        else:
+            raiz.iconphoto(True, self.icone)
+        tela_w, tela_h = raiz.winfo_screenwidth(), raiz.winfo_screenheight()
+        w, h = min(1040, tela_w), min(710, tela_h)
+        x, y = (tela_w - w) // 2, max(0, (tela_h - h) // 2)
+        if g := GEOMETRIA.fullmatch(self.config.geometria):
+            w, h, x, y = map(int, g.groups())
+            w, h = min(max(640, w), tela_w), min(max(480, h), tela_h)
+            x, y = max(0, min(x, tela_w - w)), max(0, min(y, tela_h - h))
+        raiz.geometry(f"{w}x{h}+{x}+{y}")
+        raiz.minsize(min(780, tela_w), min(540, tela_h))
         raiz.report_callback_exception = self._erro
         raiz.protocol("WM_DELETE_WINDOW", self.sair)
         raiz.bind_all("<KeyPress>", self._interacao, add="+")
@@ -58,7 +78,12 @@ class Aplicacao:
         """Invalida confirmações pendentes quando a sessão muda."""
         geracao = self._geracao
         try:
-            resposta = messagebox.askyesno("PassVault", texto, parent=pai)
+            anterior = self.raiz.grab_current()
+            modal = Confirmar(pai, texto)
+            self.raiz.wait_window(modal)
+            if anterior and anterior.winfo_exists():
+                anterior.grab_set()
+            resposta = modal.resultado
             return resposta and geracao == self._geracao and bool(pai.winfo_exists())
         except tk.TclError:
             return False
@@ -77,6 +102,9 @@ class Aplicacao:
         return "break"
 
     def _limpar_tela(self) -> None:
+        if self.paines and self.paines.winfo_exists():
+            self.config.posicao_sash = self.paines.sashpos(0)
+        self.paines = None
         self._geracao += 1
         self.raiz.configure(menu="")
         for evento in ("<Control-n>", "<Control-e>", "<Control-f>", "<F5>", "<Escape>"):
@@ -86,66 +114,86 @@ class Aplicacao:
         # O Tk cria diálogos nativos que não constam no cadastro de widgets do tkinter.
         for nome in self.raiz.tk.splitlist(self.raiz.tk.call("winfo", "children", ".")):
             self.raiz.tk.call("destroy", nome)
-        if self._prazo_status is not None:
-            self.raiz.after_cancel(self._prazo_status)
-            self._prazo_status = None
-        self._mensagem.set("")
         self._resumo.set("")
 
     def status(self, mensagem: str) -> None:
         """Publica aviso temporário ao lado da contagem e do caminho."""
-        if self._prazo_status is not None:
-            self.raiz.after_cancel(self._prazo_status)
-        self._mensagem.set(mensagem)
-        self._prazo_status = self.raiz.after(30000, self._apagar_status)
+        if self.toast and self.toast.winfo_exists():
+            self.toast.destroy()
+        self.toast = Toast(self.raiz, mensagem)
 
-    def _apagar_status(self) -> None:
-        self._mensagem.set("")
-        self._prazo_status = None
+    def mudar_tema(self, modo: str) -> None:
+        self.escolha_tema.set(modo)
+        self.config.tema = modo
+        self.tema.aplicar(modo)
+        self.config.salvar(self.disco.pasta)
+        if hasattr(self, "botao_tema") and self.botao_tema.winfo_exists():
+            self.botao_tema.nome = "sol" if self.tema.p == ESCURA else "lua"
+            self.botao_tema.redesenhar()
+            self.vazio.icone.configure(bg=self.tema.p.superficie)
+            self.vazio.icone.itemconfigure("all", fill=self.tema.p.destaque)
 
     def _tela_acesso(self) -> None:
         self._limpar_tela()
         criar = not self.disco.cofre.exists()
-        quadro = ttk.Frame(self.raiz, padding=24)
-        quadro.place(relx=0.5, rely=0.48, anchor="center")
+        quadro = Cartao(self.raiz)
+        quadro.place(relx=.5, rely=.5, anchor="center")
+        ttk.Label(quadro, image=self.logo).pack(anchor="center")
+        ttk.Label(quadro, text="PassVault", style="Titulo.TLabel").pack()
+        ttk.Label(quadro, text="Seu cofre local e cifrado", style="Secundario.TLabel").pack(
+            pady=(0, 12))
         titulo = "Criar cofre" if criar else "Desbloquear"
-        ttk.Label(quadro, text=titulo, font="TkHeadingFont").pack(anchor="w", pady=(0, 12))
         ttk.Label(quadro, text="Senha mestra").pack(anchor="w")
-        senha = campo_senha(quadro)
-        senha.configure(width=44)
-        senha.pack(fill="x")
-        confirmar = None
+        linha = ttk.Frame(quadro)
+        linha.pack(fill="x")
+        senha = campo_senha(linha)
+        senha.configure(width=30)
+        senha.pack(side="left", fill="x", expand=True)
+        olho = ttk.Button(linha, text="Mostrar", command=lambda: alternar(senha, olho))
+        olho.pack(side="left", padx=(4, 0))
+        confirmacao = None
+        barra = None
         if criar:
             ttk.Label(quadro, text="Confirmar senha mestra").pack(anchor="w", pady=(8, 0))
-            confirmar = campo_senha(quadro)
-            confirmar.pack(fill="x")
-            ttk.Label(quadro, text="Não há recuperação da senha mestra.").pack(anchor="w", pady=4)
-            aviso = ttk.Label(quadro, text="Mínimo de 8 caracteres. Prefira 12 ou mais.")
-            aviso.pack(anchor="w")
-            senha.bind("<KeyRelease>", lambda _: aviso.configure(
-                text="Prefira 12 caracteres ou mais." if len(senha.get()) < 12 else ""))
+            confirmacao = campo_senha(quadro)
+            confirmacao.pack(fill="x")
+            barra = BarraForca(quadro, self.tema)
+            barra.pack(fill="x", pady=4)
+            ttk.Label(quadro, text="Não há recuperação da senha mestra.",
+                      style="Aviso.TLabel").pack(anchor="w")
+        aviso = ttk.Label(quadro, style="Erro.TLabel", wraplength=360)
+        aviso.pack(anchor="w", pady=4)
+
+        def interagir(evento=None) -> None:
+            aviso.configure(text="Caps Lock ativado." if so.caps_lock() else "")
+            if barra:
+                valor = senha.get()
+                barra.definir(min(len(valor) * 5, len(set(valor)) * 9))
 
         def entrar() -> None:
-            valor = senha.get()
-            if criar and confirmar is not None:
-                if valor != confirmar.get():
-                    raise DadosInvalidos("As senhas não coincidem.")
-                self.cofre.criar(valor)
-                senha.delete(0, "end")
-                confirmar.delete(0, "end")
-            else:
-                senha.delete(0, "end")
-                self.cofre.desbloquear(valor)
-            del valor
+            try:
+                if criar:
+                    if senha.get() != confirmacao.get():
+                        raise DadosInvalidos("As senhas não coincidem.")
+                    self.cofre.criar(senha.get())
+                    confirmacao.delete(0, "end")
+                else:
+                    self.cofre.desbloquear(senha.get())
+            except ErroPassVault as exc:
+                aviso.configure(text=str(exc))
+                senha.focus_set()
+                return
+            senha.delete(0, "end")
             self.principal()
 
-        ttk.Button(quadro, text=titulo, command=entrar).pack(fill="x", pady=(12, 4))
+        BotaoPrimario(quadro, text=titulo, command=entrar).pack(fill="x", pady=4)
         if self.disco.anterior.exists() or self.disco.backups.exists():
             ttk.Button(quadro, text="Restaurar backup", command=lambda: Restaurar(self)).pack()
-        for widget in (senha, confirmar):
-            if widget is not None:
-                widget.bind("<Return>", lambda _: entrar())
-        ttk.Label(self.raiz, textvariable=self._mensagem, padding=6).pack(side="bottom")
+        for campo in (senha, confirmacao):
+            if campo is not None:
+                campo.bind("<Return>", lambda _: entrar())
+                campo.bind("<KeyRelease>", lambda e: interagir() if e.keysym != "Return" else None)
+        interagir()
         senha.focus_set()
 
     def _menu(self) -> None:
@@ -157,8 +205,15 @@ class Aplicacao:
                            ("Importar legado", lambda: Importar(self)),
                            ("Trocar senha mestra", lambda: TrocarSenha(self)), ("Sair", self.sair)):
             arquivo.add_command(label=nome, command=func)
-        for nome, func in self._acoes_conta():
-            editar.add_command(label=nome, command=func)
+        atalhos = ("Ctrl+N", "Ctrl+E", "Delete", "Ctrl+C", "")
+        for (nome, func), atalho in zip(self._acoes_conta(), atalhos):
+            editar.add_command(label=nome, command=func, accelerator=atalho)
+        exibir = tk.Menu(menu, tearoff=False)
+        menu.add_cascade(label="Exibir", menu=exibir)
+        self.escolha_tema = tk.StringVar(self.raiz, value=self.config.tema)
+        for modo in ("claro", "escuro", "sistema"):
+            exibir.add_radiobutton(label="Tema " + modo, variable=self.escolha_tema, value=modo,
+                                   command=lambda m=modo: self.mudar_tema(m))
         ajuda.add_command(label="Sobre", command=lambda: messagebox.showinfo(
             "Sobre", f"PassVault {__version__}\nGerenciador local de senhas.", parent=self.raiz))
         self.raiz.configure(menu=menu)
@@ -173,24 +228,37 @@ class Aplicacao:
         self._limpar_tela()
         self._interacao()
         self._menu()
-        corpo = ttk.Frame(self.raiz, padding=10)
+        corpo = ttk.Frame(self.raiz, padding=16, style="Fundo.TFrame")
         corpo.pack(fill="both", expand=True)
-        busca = ttk.Frame(corpo)
-        busca.pack(fill="x")
-        ttk.Label(busca, text="Buscar").pack(side="left", padx=(0, 8))
-        entrada = ttk.Entry(busca, textvariable=self._busca)
-        entrada.pack(side="left", fill="x", expand=True)
-        barra = ttk.Frame(corpo)
-        barra.pack(fill="x", pady=8)
-        for nome, func in (*self._acoes_conta(), ("Backup", self.backup),
-                           ("Bloquear", self.bloquear)):
-            ttk.Button(barra, text=nome, command=func).pack(side="left", padx=(0, 4))
-        paines = ttk.PanedWindow(corpo, orient="horizontal")
+        topo = ttk.Frame(corpo, padding=(12, 6))
+        topo.pack(fill="x")
+        self.logo_pequeno = self.logo.subsample(2)
+        ttk.Label(topo, image=self.logo_pequeno).pack(side="left", padx=(0, 8))
+        ttk.Label(topo, text="PassVault", style="Subtitulo.TLabel").pack(side="left")
+        for nome, texto, acao in (("bloquear", "Bloquear", self.bloquear),
+                                  ("backup", "Backup", self.backup)):
+            BotaoIcone(topo, self.tema, nome, texto, acao).pack(side="right", padx=3)
+        self.botao_tema = BotaoIcone(topo, self.tema, "sol" if self.tema.p == ESCURA else "lua",
+                                     "Tema", lambda: self.mudar_tema(
+                                         "claro" if self.tema.p == ESCURA else "escuro"))
+        self.botao_tema.pack(side="right", padx=3)
+        busca = ttk.Frame(corpo, padding=8)
+        busca.pack(fill="x", pady=8)
+        campo = CampoBusca(busca, self._busca)
+        campo.pack(side="left", fill="x", expand=True)
+        entrada = campo.entrada
+        BotaoPrimario(busca, text="Nova conta", command=lambda: Editor(self)).pack(side="right")
+        paines = self.paines = ttk.PanedWindow(corpo, orient="horizontal")
         paines.pack(fill="both", expand=True)
         esquerda = ttk.Frame(paines)
-        direita = ttk.Frame(paines, padding=(12, 0, 0, 0))
-        paines.add(esquerda, weight=3)
-        paines.add(direita, weight=2)
+        direita = Cartao(paines)
+        paines.add(esquerda, weight=62)
+        paines.add(direita, weight=38)
+        def posicionar() -> None:
+            if paines.winfo_exists():
+                w = paines.winfo_width()
+                paines.sashpos(0, max(w // 4, min(3*w // 4, self.config.posicao_sash or int(w*.62))))
+        paines.after_idle(posicionar)
         self.tabela = ttk.Treeview(esquerda, columns=("service", "username", "tags"),
                                    show="headings", selectmode="browse")
         scroll = ttk.Scrollbar(esquerda, orient="vertical", command=self.tabela.yview)
@@ -200,7 +268,7 @@ class Aplicacao:
         for campo, nome in (("service", "Serviço"), ("username", "Usuário"), ("tags", "Tags")):
             self.tabela.heading(campo, text=nome, command=lambda c=campo: self.ordenar(c))
             self.tabela.column(campo, width=150, minwidth=60)
-        self.vazio = ttk.Label(self.tabela, text="Nenhuma conta encontrada")
+        self.vazio = EstadoVazio(self.tabela, self.tema, lambda: Editor(self))
         self.tabela.bind("<<TreeviewSelect>>", lambda _: self.detalhar())
         self.tabela.bind("<Double-1>", self._duplo)
         self.tabela.bind("<Control-c>", lambda _: self._executar(self.copiar))
@@ -210,7 +278,17 @@ class Aplicacao:
                            ("Excluir", self.excluir)):
             self.contexto.add_command(label=nome, command=func)
         self.tabela.bind("<Button-3>", self._contexto)
-        ttk.Label(direita, text="Detalhes da conta", font="TkHeadingFont").pack(anchor="w")
+        self.titulo_conta = ttk.Label(direita, style="Titulo.TLabel", width=1)
+        self.titulo_conta.pack(fill="x")
+        linha_user = ttk.Frame(direita)
+        linha_user.pack(fill="x")
+        self.usuario = ttk.Label(linha_user, width=1)
+        self.usuario.pack(side="left", fill="x", expand=True)
+        BotaoIcone(linha_user, self.tema, "copiar", "Usuário",
+                   lambda: self.clip.copiar(c.username, "Usuário") if
+                   (c := self.selecionada()) else None).pack(side="right")
+        self.titulo_conta.bind("<Configure>", lambda _: self._cabecalho_conta())
+        self.usuario.bind("<Configure>", lambda _: self._cabecalho_conta())
         ttk.Label(direita, text="Senha").pack(anchor="w", pady=(12, 0))
         seg = ttk.Frame(direita)
         seg.pack(fill="x", pady=(0, 6))
@@ -223,13 +301,24 @@ class Aplicacao:
         ttk.Button(seg, text="Copiar", width=7, command=self.copiar).pack(side="left")
         self.detalhes = tk.Text(direita, wrap="word", width=30, height=12, state="disabled",
                                 padx=8, pady=8, exportselection=False, font="TkDefaultFont")
+        ttk.Button(direita, text="Editar", command=self.editar).pack(side="bottom", anchor="e")
         rolagem = ttk.Scrollbar(direita, command=self.detalhes.yview)
         self.detalhes.configure(yscrollcommand=rolagem.set)
         rolagem.pack(side="right", fill="y")
         self.detalhes.pack(fill="both", expand=True)
         self.detalhes.tag_configure("rotulo", font="TkHeadingFont", spacing1=6)
-        ttk.Label(corpo, textvariable=self._mensagem, anchor="w").pack(fill="x", pady=(5, 0))
-        ttk.Label(corpo, textvariable=self._resumo, anchor="w").pack(fill="x")
+        rodape = ttk.Frame(corpo, padding=6)
+        rodape.pack(side="bottom", fill="x", before=paines)
+        ttk.Label(rodape, textvariable=self._resumo, style="Secundario.TLabel").pack(side="left")
+        local = ttk.Label(rodape, style="Secundario.TLabel", anchor="e")
+        local.pack(side="right", fill="x", expand=True)
+        def elidir(evento) -> None:
+            nome = str(self.disco.cofre)
+            while nome and self.tema.pequena.measure("…" + nome) > evento.width:
+                nome = nome[1:]
+            local.configure(text=nome if nome == str(self.disco.cofre) else "…" + nome)
+        local.bind("<Configure>", elidir)
+        self.tema.colorir(self.raiz)
         for tecla, func in (("<Control-n>", lambda: Editor(self)), ("<Control-e>", self.editar),
                             ("<Control-f>", entrada.focus_set), ("<F5>", self.recarregar),
                             ("<Escape>", lambda: self._busca.set(""))):
@@ -266,8 +355,8 @@ class Aplicacao:
             return normalizar(valor)
 
         self.tabela.delete(*self.tabela.get_children())
-        for c in sorted(contas, key=chave, reverse=self._inversa):
-            self.tabela.insert("", "end", iid=c.id, values=(c.service, c.username,
+        for i, c in enumerate(sorted(contas, key=chave, reverse=self._inversa)):
+            self.tabela.insert("", "end", iid=c.id, tags=("alternada",) if i % 2 else (), values=(c.service, c.username,
                                                            ", ".join(c.tags)))
         if contas:
             self.vazio.place_forget()
@@ -275,9 +364,9 @@ class Aplicacao:
             self.tabela.selection_set(ident)
             self.tabela.see(ident)
         else:
-            self.vazio.place(relx=0.5, rely=0.5, anchor="center")
+            self.vazio.apresentar(bool(self.cofre.conteudo.contas))
         total = len(self.cofre.conteudo.contas)
-        self._resumo.set(f"{len(contas)} de {total} contas   ·   {self.disco.cofre}")
+        self._resumo.set(f"{len(contas)} de {total} contas")
         self.detalhar()
 
     def selecionar_salva(self, identificador: str) -> None:
@@ -285,6 +374,7 @@ class Aplicacao:
         if not any(c.id == identificador for c in self.cofre.buscar(self._busca.get())):
             self._busca.set("")
         self.atualizar(identificador)
+        self.status("Conta salva.")
 
     def ordenar(self, campo: str) -> None:
         """Alterna a ordenação pelo cabeçalho."""
@@ -297,11 +387,20 @@ class Aplicacao:
         selecao = self.tabela.selection()
         return self.cofre.obter(selecao[0]) if selecao else None
 
+    def _cabecalho_conta(self) -> None:
+        if self.cofre.aberto:
+            conta = self.selecionada()
+            for widget, valor, fonte in (
+                    (self.titulo_conta, conta.service if conta else "", self.tema.titulo),
+                    (self.usuario, conta.username if conta else "", font.nametofont("TkDefaultFont"))):
+                widget.configure(text=abreviar(valor, max(1, widget.winfo_width() - 4), fonte))
+
     def detalhar(self) -> None:
         """Renderiza detalhes e redefine a máscara ao trocar de seleção."""
         if not self.cofre.aberto:
             return
         c = self.selecionada()
+        self._cabecalho_conta()
         self.revelar.configure(text="Mostrar")
         self.segredo.configure(state="normal", show="•")
         self.segredo.delete(0, "end")
@@ -362,7 +461,15 @@ class Aplicacao:
         self.cofre.bloquear()
         self.clip.limpar()
         self.raiz.after_cancel(self._timer)
-        self.raiz.destroy()
+        try:
+            self.config.geometria = self.raiz.geometry()
+            if self.paines and self.paines.winfo_exists():
+                self.config.posicao_sash = self.paines.sashpos(0)
+            self.config.salvar(self.disco.pasta)
+        except ErroPassVault:
+            logging.getLogger("passvault").warning("Falha ao salvar preferências.")
+        finally:
+            self.raiz.destroy()
 
 
 def principal() -> int:
@@ -371,8 +478,7 @@ def principal() -> int:
     try:
         raiz = tk.Tk()
     except tk.TclError:
-        print("Não foi possível abrir a interface. Verifique a sessão gráfica e o DISPLAY.")
-        return 1
+        raise RuntimeError("Interface indisponível.") from None
     raiz.withdraw()
     app = None
     try:
@@ -381,9 +487,9 @@ def principal() -> int:
         app = Aplicacao(raiz, disco)
         raiz.deiconify()
         raiz.mainloop()
-    except ErroPassVault as erro:
-        messagebox.showerror("PassVault", str(erro), parent=raiz)
-        return 1
+    except ErroPassVault:
+        raiz.destroy()
+        raise
     finally:
         if app is not None:
             app.cofre.bloquear()

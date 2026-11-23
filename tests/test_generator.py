@@ -1,5 +1,6 @@
 """Testes do gerador e do prazo de cópia sem usar o clipboard real."""
 
+import os
 import string
 import unittest
 from unittest.mock import Mock, patch
@@ -28,21 +29,25 @@ class Gerador(unittest.TestCase):
             with self.assertRaises(DadosInvalidos):
                 opcoes.gerar()
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "memfd_create"), "Wayland Linux")
     def test_clipboard_wayland(self) -> None:
         janela, aviso = Mock(), Mock()
         janela.after.return_value = "prazo"
         with patch("passvault.clipboard.shutil.which", return_value="wl-copy"), \
                 patch("passvault.clipboard.subprocess.run") as executar:
+            import subprocess
             lido = []
-            def observar(argumentos: list[str], **opcoes: object) -> None:
-                if "--clear" not in argumentos:
-                    lido.append(opcoes["stdin"].read())
+            processo = Mock()
+            processo.poll.return_value = None
+            processo.wait.side_effect = [subprocess.TimeoutExpired("wl-copy", .15), 0]
+            def iniciar(args, **opcoes):
+                self.assertNotIn("FAKE", args)
+                lido.append(opcoes["stdin"].read())
+                return processo
 
-            executar.side_effect = observar
             clip = Clipboard(janela, aviso)
-            clip.copiar("FAKE")
-            argumentos, opcoes = executar.call_args
-            self.assertNotIn("FAKE", argumentos[0])
+            with patch("passvault.clipboard.subprocess.Popen", side_effect=iniciar):
+                clip.copiar("FAKE")
             self.assertEqual(lido, [b"FAKE"])
             janela.after.assert_called_once_with(30000, clip.limpar)
             clip.limpar()
@@ -51,10 +56,12 @@ class Gerador(unittest.TestCase):
 
     def test_clipboard_tk(self) -> None:
         janela, aviso = Mock(), Mock()
-        with patch("passvault.clipboard.shutil.which", return_value=None):
+        with patch("passvault.clipboard.so.WINDOWS", False), \
+                patch("passvault.clipboard.shutil.which", return_value=None):
             clip = Clipboard(janela, aviso)
             clip.copiar("FAKE")
             janela.clipboard_append.assert_called_once_with("FAKE")
             self.assertIn("fechamento", aviso.call_args.args[0])
+            janela.clipboard_get.return_value = "FAKE"
             clip.limpar()
             self.assertEqual(janela.clipboard_clear.call_count, 2)

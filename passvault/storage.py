@@ -1,6 +1,5 @@
 """Armazenamento privado, gravação atômica, retenção e exclusão mútua."""
 
-import fcntl
 import logging
 import os
 import re
@@ -13,8 +12,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Iterator
 
-from .constants import MAX_ARQUIVO, MAX_BACKUPS, pasta_xdg
-from .errors import ErroArmazenamento, InstanciaAberta, SemCofre, VaultCorrupted
+from . import plataforma as so
+from .plataforma import pasta_privada, sincronizar
+from .constants import MAX_ARQUIVO, MAX_BACKUPS
+from .errors import ErroArmazenamento, SemCofre, VaultCorrupted
 
 
 @contextmanager
@@ -28,34 +29,15 @@ def tratar_io() -> Iterator[None]:
         ) from None
 
 
-def pasta_privada(pasta: Path) -> None:
-    """Garante uma pasta privada real, sem seguir link no componente final."""
-    pasta.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(pasta, os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fchmod(fd, 0o700)
-    finally:
-        os.close(fd)
-
-
-def sincronizar(pasta: Path) -> None:
-    """Persiste as alterações nas entradas do diretório."""
-    fd = os.open(pasta, os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def ler_privado(caminho: Path) -> bytes:
     """Lê um arquivo regular com limite e corrige seu modo."""
-    fd = os.open(caminho, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = so.abrir_regular(caminho, os.O_RDONLY)
     with os.fdopen(fd, "rb") as f:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ARQUIVO:
             raise VaultCorrupted()
-        if stat.S_IMODE(info.st_mode) != 0o600:
-            os.fchmod(fd, 0o600)
+        if not so.WINDOWS and stat.S_IMODE(info.st_mode) != 0o600:
+            so.proteger(fd)
             logging.getLogger("passvault").warning("Permissões de arquivo corrigidas.")
         dados = f.read(MAX_ARQUIVO + 1)
         if len(dados) > MAX_ARQUIVO:
@@ -65,39 +47,49 @@ def ler_privado(caminho: Path) -> bytes:
 
 def escrever_atomico(caminho: Path, dados: bytes) -> None:
     """Publica após fsync e reverte a troca se o fsync do diretório falhar."""
-    fd, nome = tempfile.mkstemp(dir=caminho.parent, prefix=".pv-")
-    temporario = Path(nome)
-    anterior = temporario.with_suffix(".anterior")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            os.fchmod(fd, 0o600)
-            f.write(dados)
-            f.flush()
-            os.fsync(fd)
-        if caminho.exists():
-            os.link(caminho, anterior, follow_symlinks=False)
-        os.replace(temporario, caminho)
+    so.verificar_interno(caminho.parent, caminho)
+    def temporario(conteudo: bytes) -> Path:
+        fd, nome = tempfile.mkstemp(dir=caminho.parent, prefix=".pv-")
+        arq = Path(nome)
         try:
-            sincronizar(caminho.parent)
-        except OSError:
-            if anterior.exists():
-                os.replace(anterior, caminho)
-            else:
-                caminho.unlink()
+            with os.fdopen(fd, "wb") as f:
+                so.proteger(fd)
+                f.write(conteudo)
+                f.flush()
+                os.fsync(fd)
+        except BaseException:
+            arq.unlink(missing_ok=True)
             raise
+        return arq
+
+    novo = temporario(dados)
+    anterior = None
+    try:
+        if not so.WINDOWS and caminho.exists():
+            anterior = temporario(ler_privado(caminho))
+        so.substituir(novo, caminho)
+        if not so.WINDOWS:
+            try:
+                sincronizar(caminho.parent)
+            except OSError:
+                if anterior is None:
+                    caminho.unlink()
+                else:
+                    so.substituir(anterior, caminho)
+                raise
     finally:
-        temporario.unlink(missing_ok=True)
-        anterior.unlink(missing_ok=True)
+        novo.unlink(missing_ok=True)
+        if anterior is not None:
+            anterior.unlink(missing_ok=True)
 
 
 class LogPrivado(RotatingFileHandler):
     """Cria arquivos de log com modo restrito, inclusive após rotação."""
 
     def _open(self):
-        fd = os.open(self.baseFilename, os.O_APPEND | os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
-                     0o600)
+        fd = so.abrir_regular(Path(self.baseFilename), os.O_APPEND | os.O_CREAT | os.O_WRONLY)
         try:
-            os.fchmod(fd, 0o600)
+            so.proteger(fd)
             return os.fdopen(fd, "a", encoding="utf-8")
         except OSError:
             os.close(fd)
@@ -110,7 +102,7 @@ def configurar_log() -> None:
     if log.handlers:
         return
     with tratar_io():
-        pasta = pasta_xdg("XDG_STATE_HOME", ".local/state")
+        pasta = so.pasta_logs()
         pasta_privada(pasta)
         handler = LogPrivado(pasta / "passvault.log", maxBytes=1024**2, backupCount=2)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -132,7 +124,7 @@ class Armazenamento:
     """Controla os arquivos de um único cofre."""
 
     def __init__(self, pasta: Path | None = None) -> None:
-        self.pasta = pasta or pasta_xdg("XDG_DATA_HOME", ".local/share")
+        self.pasta = pasta or so.pasta_dados()
         self.cofre = self.pasta / "vault.enc"
         self.anterior = self.pasta / "vault.enc.bak"
         self.backups = self.pasta / "backups"
@@ -144,14 +136,11 @@ class Armazenamento:
             return
         with tratar_io():
             pasta_privada(self.pasta)
-            fd = os.open(self.pasta / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            fd = so.abrir_regular(self.pasta / ".lock", os.O_CREAT | os.O_RDWR)
             try:
-                os.fchmod(fd, 0o600)
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                os.close(fd)
-                raise InstanciaAberta("O PassVault já está aberto em outra janela.") from None
-            except OSError:
+                so.proteger(fd)
+                so.travar_instancia(fd)
+            except BaseException:
                 os.close(fd)
                 raise
             self._lock = fd
@@ -159,13 +148,14 @@ class Armazenamento:
     def liberar(self) -> None:
         """Libera o lock sem remover seu inode."""
         if self._lock is not None:
-            os.close(self._lock)
+            so.destravar_instancia(self._lock)
             self._lock = None
 
     def ler(self) -> bytes:
         """Lê o cofre atual."""
         with tratar_io():
             try:
+                so.verificar_interno(self.pasta, self.cofre)
                 return ler_privado(self.cofre)
             except FileNotFoundError:
                 raise SemCofre("Cofre ainda não criado.") from None
@@ -220,4 +210,5 @@ class Armazenamento:
         if caminho != self.anterior and caminho not in [item.caminho for item in self.listar()]:
             raise ErroArmazenamento("Backup indisponível.")
         with tratar_io():
+            so.verificar_interno(self.pasta, caminho)
             return ler_privado(caminho)

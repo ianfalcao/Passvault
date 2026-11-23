@@ -1,0 +1,13 @@
+VSVersionInfo(
+  ffi=FixedFileInfo(filevers=(1,1,0,0), prodvers=(1,1,0,0), mask=0x3f, flags=0,
+                    OS=0x40004, fileType=1, subtype=0, date=(0,0)),
+  kids=[StringFileInfo([StringTable('041604b0', [
+    StringStruct('CompanyName','PassVault'),
+    StringStruct('FileDescription','Gerenciador de senhas local'),
+    StringStruct('FileVersion','1.1.0.0'),
+    StringStruct('InternalName','PassVault'),
+    StringStruct('OriginalFilename','PassVault.exe'),
+    StringStruct('ProductName','PassVault'),
+    StringStruct('ProductVersion','1.1.0.0'),
+    StringStruct('LegalCopyright','Copyright © 2026 PassVault')
+  ])]), VarFileInfo([VarStruct('Translation',[1046,1200])])])
