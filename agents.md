@@ -1,475 +1,557 @@
-# PROMPT DE IMPLEMENTAÇÃO — PassVault
+## 1. Papel e missão
 
-## 1. Papel
+Você é um engenheiro sênior de Python, segurança aplicada, UI desktop com tkinter/ttk e empacotamento Windows com PyInstaller. Trabalhe de forma autônoma no projeto existente em `/home/ianfalcao/passvault` (ou na cópia do repositório disponível no seu ambiente).
 
-Você é um engenheiro de software sênior especializado em Python, segurança aplicada e interfaces desktop com tkinter. Implemente, teste e documente o projeto abaixo de ponta a ponta, trabalhando de forma autônoma. Não faça perguntas: se houver ambiguidade, siga este documento e registre a decisão no README.
+Missão: manter o PassVault 100% funcional no Linux, fazê-lo funcionar nativamente no Windows 10/11, gerar um `PassVault.exe` autônomo e entregar uma interface visualmente agradável, consistente, acessível e com tema claro/escuro.
 
-Prioridade em caso de conflito: **segurança > integridade dos dados > usabilidade > conveniência**.
+Prioridade em conflito: **segurança > integridade do cofre > compatibilidade > usabilidade > estética**.
 
-## 2. Contexto do usuário
+Não reescreva a criptografia nem o formato do cofre. O formato PVLT versão 1 deve continuar idêntico e compatível entre Linux e Windows.
 
-O usuário guarda cerca de 40 senhas pessoais em um único arquivo JSON em claro. O arquivo atual é:
+## 2. Estado atual do projeto
 
-- Caminho: `/home/ianfalcao/my/4.json`
-- Tamanho: ~5,3 KB, codificado em UTF-8 **com BOM**
-- Permissões atuais: `0777` (qualquer usuário do sistema pode ler)
-- Estrutura: `{"accounts": [ {...}, {...} ]}`
-- Chaves encontradas nas contas: `service`, `email`, `username`, `id`, `user`, `password`, `pin`, `key`, `code`
-- **O arquivo não é JSON válido**: faltam vírgulas entre objetos por volta das linhas 95–113. O reparo deve ser genérico, nunca baseado em números de linha fixos.
-- O arquivo contém segredos reais: **nunca imprima seu conteúdo** em terminal, log, teste, commit ou mensagem.
+O projeto já existe e deve ser evoluído, não recriado:
 
-Objetivo: substituir esse arquivo por um gerenciador de senhas desktop, com cofre cifrado em repouso, migrando os dados existentes com backup.
+- Pacote `passvault/` com `app.py`, `dialogs.py`, `crypto.py`, `storage.py`, `vault.py`, `migrate.py`, `clipboard.py`, `generator.py`, `constants.py`, `errors.py`.
+- Cofre PVLT v1: scrypt (`n=2**15`, `r=8`, `p=1`) + AES-256-GCM, salt de 16 bytes, nonce de 12 bytes, cabeçalho autenticado como AAD.
+- Interface tkinter/ttk funcional, em português.
+- 30 testes passam no Linux com `python3 -m unittest discover -s tests -v`.
+- Dados no Linux: `~/.local/share/passvault/` e `~/.local/state/passvault/`.
+- Não há assets, ícone, spec, script de build nem workflow de CI.
 
-## 3. Ambiente verificado
+### Bloqueios de Windows já identificados
 
-- Linux, sessão Wayland (`DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`)
-- Python 3.14.10
-- `cryptography` 50.0.0 instalado no sistema
-- `tkinter` disponível, Tcl/Tk 9.0, temas `clam`, `alt`, `default`, `classic`
-- `wl-copy` e `wl-paste` disponíveis; `xclip` e `xsel` ausentes
-- `pytest` ausente — use `unittest` da stdlib
-- Diretório de trabalho: `/home/ianfalcao`
+Corrija todos, sem exceção:
 
-## 4. Objetivo e escopo
+| Arquivo | Problema | Correção esperada |
+|---|---|---|
+| `storage.py` | `import fcntl` no topo | Importação condicional por plataforma |
+| `storage.py` | `os.O_DIRECTORY`, `os.O_NOFOLLOW`, `os.O_NONBLOCK` | Flags condicionais com `getattr(..., 0)` e validação de caminho |
+| `storage.py` | `os.fchmod` | Abstração de permissões; no Windows não aplicar modo POSIX |
+| `storage.py` | `os.link(..., follow_symlinks=False)` | Cópia atômica para `.bak`, sem hardlink |
+| `storage.py` | `os.fsync` em diretório | Só no POSIX; no Windows usar `os.replace` com retry |
+| `storage.py` | `stat.S_IMODE == 0o600` | Checagem apenas no POSIX; Windows usa ACL do perfil |
+| `migrate.py` | `O_NOFOLLOW`, `O_NONBLOCK`, `os.fchmod` | Usar a camada de plataforma |
+| `constants.py` | `LEGADO = Path("/home/ianfalcao/my/4.json")` | Caminho dinâmico por SO e candidatos |
+| `constants.py` | `pasta_xdg` com `~/.local/share` | Caminhos nativos por SO |
+| `clipboard.py` | `wl-copy`, `/proc/self/mountinfo`, `os.memfd_create` | Backend Windows com `ctypes`; Wayland preservado |
+| `__main__.py` | Mensagens de erro para console/distribuição Linux | Erro fatal nativo no Windows + log |
+| testes | Assumem `0600/0700` e `wl-copy` | Pular/adaptar no Windows e testar backends |
+| projeto | Sem ícone, versão, manifesto, spec ou build | Adicionar empacotamento completo |
 
-Criar o **PassVault**, aplicativo desktop em Python para gerenciar senhas pessoais:
+## 3. Objetivo e escopo
 
-- Interface gráfica com tkinter/ttk, em português do Brasil
-- Cofre único cifrado com AES-256-GCM e chave derivada por scrypt
-- Desbloqueio por senha mestra, sem armazená-la
-- CRUD de contas, busca, gerador de senhas, cópia segura para clipboard
-- Backup, restauração, troca de senha mestra e auto-lock
-- Migração assistida do `4.json`, preservando o original e criando backup
-- Testes automatizados com `unittest`
-- Documentação completa em `README.md`
+1. Rodar a partir do código no Windows: `python -m passvault`.
+2. Gerar `PassVault.exe` autônomo, sem console, com ícone e metadados de versão.
+3. Manter o Linux funcionando exatamente como hoje.
+4. Redesenhar a GUI com aparência moderna, clara e agradável, mantendo todas as funções.
+5. Adicionar tema claro/escuro, toasts, validação inline, ícones desenhados e layout consistente.
+6. Adicionar testes multiplataforma e CI que rode testes no Linux e Windows e produza o `.exe`.
+7. Atualizar a documentação.
 
-Local do projeto: `/home/ianfalcao/passvault`
-
-## 5. Decisões fixas (não reabrir)
+## 4. Decisões fixas (não reabrir)
 
 | Tema | Decisão |
 |---|---|
-| Interface | GUI tkinter/ttk, pt-BR |
-| Cofre | `~/.local/share/passvault/vault.enc` (respeitar `XDG_DATA_HOME`) |
-| Criptografia | scrypt + AES-256-GCM |
-| Dependências | stdlib + `cryptography` apenas; nada de pip install |
-| Testes | `unittest`, sem pytest |
-| Migração | Importar e manter backup; nunca apagar o original automaticamente |
-| Clipboard | Limpeza automática em 30 s |
-| Auto-lock | 5 min de inatividade |
-| TOTP/2FA | Fora do escopo desta versão |
-| Layout | Pacote plano, executável com `python3 -m passvault` |
+| Formato do cofre | PVLT v1 inalterado; compatível Linux ↔ Windows |
+| Criptografia | Inalterada: scrypt + AES-256-GCM |
+| Dependências de runtime | stdlib + `cryptography` apenas |
+| UI | tkinter/ttk puro, tema próprio; sem customtkinter/ttkbootstrap |
+| Empacotamento | PyInstaller, `--onefile --windowed`, sem UPX |
+| Build | Obrigatoriamente em Windows nativo, VM ou CI Windows |
+| Dados no Windows | `%LOCALAPPDATA%\PassVault\` |
+| Dados no Linux | `~/.local/share/passvault/` (inalterado) |
+| Clipboard | Limpeza em 30 s; no Windows só limpar se ainda for o valor copiado |
+| Auto-lock | 5 min (inalterado) |
+| Tema | Claro e escuro, persistido |
+| Idioma | Português do Brasil |
+| Testes | `unittest`; sem pytest |
 
-## 6. Requisitos funcionais
+## 5. Compatibilidade com Windows
 
-**FR-01 — Criar cofre.** No primeiro uso, tela de criação com senha mestra, confirmação e aviso explícito de que não há recuperação. Mínimo de 8 caracteres; aviso visual abaixo de 12. Criar diretório `0700`, arquivo `0600` e cofre vazio válido.
+### 5.1 Caminhos e configuração
 
-**FR-02 — Desbloquear.** Se o cofre existe, solicitar senha mestra. Senha errada ou arquivo corrompido exibem mensagem amigável e permitem tentar novamente. Não implementar bloqueio por tentativas (é local).
+Crie `passvault/plataforma.py` como única fonte de verdade para diferenças de SO:
 
-**FR-03 — Listar.** Tabela com `Serviço`, `Usuário` e `Tags`. Nunca exibir senhas na tabela. Ordenação por clique no cabeçalho (asc/desc).
+- `WINDOWS = os.name == "nt"`
+- `pasta_dados()`:
+  - Windows: `%LOCALAPPDATA%\PassVault`; fallback `Path.home() / "AppData" / "Local" / "PassVault"`
+  - Linux: `$XDG_DATA_HOME/passvault` ou `~/.local/share/passvault`
+  - macOS (opcional): `~/Library/Application Support/PassVault`
+- `pasta_logs()`:
+  - Windows: `%LOCALAPPDATA%\PassVault\logs`
+  - Linux: `$XDG_STATE_HOME/passvault` ou `~/.local/state/passvault`
+- `pasta_config()`: mesma pasta de dados.
+- Suportar `PASSVAULT_HOME` como override avançado para testes e modo portátil; documentar que o padrão é mais seguro.
+- `caminho_legado_padrao()`: testar candidatos e retornar o primeiro existente:
+  - Windows: `~/my/4.json`, `~/4.json`, `~/Documents/4.json`, `~/Downloads/4.json`
+  - Linux: `~/my/4.json`, `~/4.json`
+  - fallback: `~/my/4.json`
+- Persistir o último caminho importado em `config.json` (sem segredos).
+- Configuração `config.py`: dataclass com `tema` (`claro`/`escuro`/`sistema`), `geometria`, `posicao_sash`, `ultimo_import`; leitura tolerante a arquivo corrompido; gravação atômica.
 
-**FR-04 — Buscar.** Campo de busca com filtro instantâneo, insensível a maiúsculas e acentos (normalização Unicode), sobre serviço, usuário, tags e URL. Não buscar dentro de senhas nem de notas.
+### 5.2 Armazenamento, permissões e atomicidade
 
-**FR-05 — Adicionar.** Diálogo com serviço (obrigatório), usuário, senha (oculta, com botão mostrar), URL, notas e tags (separadas por vírgula). Botão para gerar senha. Salvar imediatamente no cofre.
+- No POSIX, preservar `0700` no diretório e `0600` nos arquivos, `fchmod`, `fsync` de arquivo e diretório.
+- No Windows:
+  - Não usar `chmod` POSIX como se fosse segurança.
+  - Criar tudo sob `%LOCALAPPDATA%\PassVault`, protegido pela ACL do perfil do usuário.
+  - Verificar que o caminho resolvido permanece dentro da pasta de dados; rejeitar symlink/junction no componente final.
+  - Não falhar se não for possível aplicar ACL extra; registrar aviso.
+  - Documentar que a proteção no Windows é a ACL NTFS do perfil, não `0600`.
+- Flags de abertura:
+  - `O_NOFOLLOW`, `O_DIRECTORY`, `O_NONBLOCK` via `getattr(os, ..., 0)`.
+  - `O_BINARY` no Windows.
+  - Rejeitar `lstat` que não seja arquivo regular.
+- Escrita atômica:
+  - Temporário no mesmo diretório, `fsync` do arquivo, `os.replace`.
+  - No Windows, repetir `os.replace` até 5 vezes com pequena espera em `PermissionError` (antivírus/indexador).
+  - `fsync` de diretório apenas no POSIX.
+  - Em erro, remover temporário e preservar o cofre anterior.
+- Backup `.bak`: gravar uma cópia atômica dos bytes atuais, sem hardlink.
+- Log:
+  - Windows: `%LOCALAPPDATA%\PassVault\logs\passvault.log`.
+  - Sem `O_NOFOLLOW`/`fchmod` no Windows; criar diretório e usar `open`.
+  - Rotação de 1 MB, 2 backups, UTF-8, nunca registrar segredos.
 
-**FR-06 — Editar.** Mesmo diálogo, pré-preenchido. Permitir alterar qualquer campo. Duplo clique na linha também abre a edição.
+### 5.3 Instância única (lock)
 
-**FR-07 — Excluir.** Confirmação exibindo o nome do serviço. Remover pelo `id` interno, nunca pelo índice da tabela.
+Crie `travar_instancia(fd)` e `destravar_instancia(fd)` em `plataforma.py`:
 
-**FR-08 — Copiar senha.** Botão e atalho copiam a senha da conta selecionada. Preferir `wl-copy` via `subprocess` com a senha em `stdin` (nunca em argumentos de linha de comando). Limpar após 30 s com `wl-copy --clear`. Fallback: clipboard do tkinter com `after(30000, clipboard_clear)`, avisando na barra de status que a limpeza pode não sobreviver ao fechamento do app. Limpar também ao bloquear e ao sair.
+- POSIX: `fcntl.flock(fd, LOCK_EX | LOCK_NB)`.
+- Windows: `msvcrt.locking(fd, LK_NBLCK, 1)`.
+  - Garantir que o arquivo `.lock` tenha pelo menos 1 byte.
+  - `lseek(0)`, travar 1 byte, manter o fd aberto durante toda a vida do app.
+  - No release: `LK_UNLCK`, fechar.
+  - Mapear falha para `InstanciaAberta` com a mensagem atual.
+- Testar aquisição, segunda instância bloqueada e liberação.
 
-**FR-09 — Gerador.** Comprimento 8–128 (padrão 24), maiúsculas, minúsculas, dígitos e símbolos; opção "evitar caracteres ambíguos" (`Il1O0o`); garantir ao menos um caractere de cada classe selecionada; usar `secrets`. Indicador simples de força por entropia.
+### 5.4 Clipboard no Windows
 
-**FR-10 — Revelar senha.** No painel de detalhes, senha mascarada com botão "Mostrar/Ocultar".
+Reescreva `clipboard.py` com backends selecionados por plataforma:
 
-**FR-11 — Trocar senha mestra.** Solicitar senha atual, nova e confirmação. Verificar a atual, gerar novo salt, derivar nova chave e regravar o cofre atomicamente. Em caso de falha, o cofre antigo permanece intacto.
+- **Windows** (`clipboard_windows.py`), usando apenas `ctypes`:
+  - `OpenClipboard(None)` com até 10 tentativas e 20 ms de espera.
+  - `EmptyClipboard()`.
+  - `CF_UNICODETEXT = 13`, `GMEM_MOVEABLE = 0x0002`.
+  - `GlobalAlloc`, `GlobalLock`, cópia UTF-16LE com terminador nulo, `GlobalUnlock`, `SetClipboardData`, `CloseClipboard`.
+  - Em falha, `GlobalFree` e fallback para Tk com aviso.
+  - Capturar `GetClipboardSequenceNumber()` após copiar. No timer de 30 s, limpar somente se o número ainda for o mesmo; se o usuário copiou outra coisa, não destruir o clipboard dele.
+  - `limpar()` no lock e na saída.
+  - Melhor esforço para privacidade: registrar os formatos `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard` e `ExcludeClipboardContentFromMonitorProcessing` com valor 0, para reduzir histórico/Cloud Clipboard. Nunca falhar por causa disso.
+  - Definir `argtypes`/`restype` corretos para 64 bits.
+  - Nunca passar a senha por argv, ambiente ou arquivo.
+- **Wayland**: preservar o comportamento atual com `wl-copy`, incluindo `--clear`.
+- **Tk**: fallback com `clipboard_clear`/`clipboard_append` e aviso de que a limpeza pode não sobreviver ao fechamento.
+- Injetar a API do clipboard no construtor para permitir testes sem Windows real.
 
-**FR-12 — Backup.** Botão que cria cópia cifrada datada em `~/.local/share/passvault/backups/vault-AAAAMMDD-HHMMSS.enc` com `0600`. Manter as 5 mais recentes. Além disso, antes de cada gravação, copiar o cofre anterior para `vault.enc.bak` com `0600`.
+### 5.5 DPI, ícone, taskbar e janelas
 
-**FR-13 — Restaurar backup.** Listar backups disponíveis com data e tamanho, pedir confirmação, fazer backup do cofre atual e substituir pelo escolhido. Validar o backup com a senha mestra antes de confirmar a substituição.
+- Antes de criar `tk.Tk()` no Windows, chamar `plataforma.preparar_windows()`:
+  - `SetProcessDpiAwarenessContext(-4)` (PerMonitorV2), fallback `shcore.SetProcessDpiAwareness(2)`, fallback `user32.SetProcessDPIAware()`.
+  - `SetCurrentProcessExplicitAppUserModelID("PassVault.App.1")` para agrupamento e ícone corretos na taskbar.
+  - Envolver tudo em `try/except` e nunca impedir a inicialização.
+- Após criar a janela, ajustar `tk scaling` com base em `winfo_fpixels("1i") / 72`.
+- Usar tamanhos de fonte em pontos; testar em 100%, 150% e 200%.
+- Ícone:
+  - `passvault/assets/passvault.ico` multi-resolução (16, 24, 32, 48, 64, 128, 256).
+  - `passvault/assets/passvault.png` 256×256 e `logo.png` 64×64 para a tela de desbloqueio.
+  - `resource_path()` que funciona com `sys._MEIPASS` no PyInstaller e com o pacote normal.
+  - `iconbitmap` no Windows; `iconphoto` no Linux.
+- Centralizar diálogos no pai; impedir posições fora da tela ao restaurar geometria.
+- Persistir geometria e posição do sash no `config.json`.
 
-**FR-14 — Importar legado.** Diálogo com caminho pré-preenchido `/home/ianfalcao/my/4.json`, botão "Analisar" que mostra contagem e avisos sem gravar nada, e botão "Importar" que:
-- repara o JSON quebrado;
-- normaliza os campos;
-- grava no cofre;
-- cria backup datado do original;
-- ajusta a permissão do original para `0600`;
-- mantém o original no lugar;
-- exibe relatório de importados/ignorados/duplicados.
+### 5.6 Erros, logs e modo sem console
 
-**FR-15 — Auto-lock.** Após 300 s sem teclado ou clique, apagar a chave da memória, limpar o clipboard e voltar à tela de desbloqueio. Verificar a inatividade a cada 5 s.
+- `PassVault.exe` será `--windowed`: não há console.
+- Criar `plataforma.erro_fatal(titulo, texto)`:
+  - Windows: `ctypes.windll.user32.MessageBoxW(0, texto, titulo, 0x10)`.
+  - Linux: `print` em `stderr`.
+- Erros fatais de inicialização (Tcl/Tk ausente, falha de lock, cofre corrompido) devem ir para MessageBox + log, nunca só para stdout.
+- Manter o handler de exceções de callback do Tk e o log sem segredos.
+- `__main__.py` com `argparse` antes de importar tkinter:
+  - `--version`
+  - `--self-test`
+  - `--data-dir CAMINHO`
+- `--self-test` deve rodar sem GUI e sem display:
+  - criar cofre temporário com senha fictícia;
+  - adicionar conta, bloquear, desbloquear, verificar;
+  - trocar senha;
+  - criar backup;
+  - validar leitura/escrita e lock;
+  - sair com código 0 em sucesso, 1 em falha;
+  - não usar dados reais.
+- O mesmo autoteste deve funcionar no `.exe` empacotado para validar a extração de DLLs do `cryptography` e do Tcl/Tk.
 
-**FR-16 — Bloquear manualmente.** Botão e atalho fazem o mesmo que o auto-lock, imediatamente.
+### 5.7 Portabilidade do cofre
 
-**FR-17 — Sair.** Ao fechar a janela, limpar chave e clipboard. Cada operação já grava o cofre, então não há alterações pendentes.
+- Nenhuma mudança no formato PVLT v1.
+- Copiar `~/.local/share/passvault/vault.enc` para `%LOCALAPPDATA%\PassVault\vault.enc` deve abrir sem conversão.
+- Backups `.bak` e datados também são portáveis.
+- `meta.legacy_import.source` pode conter caminho Linux; não é usado para abrir nada, então não precisa ser reescrito.
+- Documentar esse procedimento no README.
+- Testar ida e volta: criar no Linux, abrir no Windows; criar no Windows, abrir no Linux.
 
-**FR-18 — Status.** Barra inferior com quantidade de contas, caminho do cofre e aviso quando o clipboard não pôde ser gerenciado com segurança.
+## 6. Interface agradável
 
-**FR-19 — Atalhos.** `Ctrl+N` adicionar, `Ctrl+E` editar, `Ctrl+F` buscar, `Ctrl+C` copiar senha (apenas com foco na tabela), `Delete` excluir, `Ctrl+L` bloquear, `F5` recarregar, `Esc` limpar busca.
+Refatore a GUI para um visual moderno e consistente, sem mudar o comportamento funcional. Crie `passvault/ui/` com `theme.py`, `widgets.py` e `icons.py`.
 
-**FR-20 — Menu.** Arquivo (Backup, Restaurar backup, Importar legado, Trocar senha mestra, Sair), Editar (Adicionar, Editar, Excluir, Copiar senha, Gerar senha), Ajuda (Sobre).
+### 6.1 Design tokens
 
-## 7. Requisitos não funcionais
+Paleta clara:
 
-- 100% offline; nenhuma chamada de rede, telemetria ou analytics.
-- Nenhum segredo em texto claro em disco, arquivo temporário, log, argv, ambiente, título de janela ou nome de arquivo.
-- Escrita atômica e recuperável; nunca truncar o cofre em caso de erro.
-- Desbloqueio em menos de 1,5 s em máquina típica; busca instantânea para até 1.000 contas.
-- Mensagens de erro em português, sem traceback para o usuário.
-- Código com type hints, docstrings curtas em português, sem estado global mutável.
-- Sem `eval`, `pickle`, `yaml`, `os.system` ou `shell=True`.
-- Testes não podem tocar no cofre real nem no `4.json` real: usar diretórios temporários e fixtures com dados falsos.
+| Token | Cor |
+|---|---|
+| fundo | `#F4F6FB` |
+| superfície | `#FFFFFF` |
+| superfície alternada | `#EEF2F8` |
+| texto | `#111827` |
+| texto secundário | `#6B7280` |
+| borda | `#DCE3EE` |
+| destaque | `#2F6FED` |
+| destaque hover | `#1E5BD6` |
+| destaque suave | `#E8F0FE` |
+| perigo | `#D64545` |
+| sucesso | `#178A5B` |
+| aviso | `#B7791F` |
+| seleção | `#DCE9FF` |
 
-## 8. Arquitetura e arquivos
+Paleta escura:
 
-Criar exatamente esta estrutura:
+| Token | Cor |
+|---|---|
+| fundo | `#0F172A` |
+| superfície | `#172033` |
+| superfície alternada | `#1E293B` |
+| texto | `#E5E7EB` |
+| texto secundário | `#94A3B8` |
+| borda | `#2B3A52` |
+| destaque | `#5B9CFF` |
+| destaque hover | `#7AB0FF` |
+| destaque suave | `#1E3A5F` |
+| perigo | `#F87171` |
+| sucesso | `#34D399` |
+| seleção | `#23406B` |
+
+Fontes:
+
+- Windows: `Segoe UI`; Linux: `Noto Sans`, fallback `DejaVu Sans`; detectar com `tkinter.font.families()`.
+- Corpo 10 pt; secundário 9 pt; título 18 pt bold; subtítulo 11 pt; botões 10 pt.
+- Senhas geradas: `Cascadia Mono`, `Consolas` ou `DejaVu Sans Mono`.
+
+Espaçamento: escala 4/8/12/16/24; padding padrão 16; altura de linha da tabela 34; botões com padding `(14, 8)`.
+
+Formas: cartões planos com borda de 1 px e fundo de superfície; evitar cantos arredondados frágeis no ttk. Use Canvas apenas para ícones e barras.
+
+Contraste: todo texto deve ter contraste mínimo 4,5:1 com o fundo, nos dois temas. Adicionar teste de contraste para a paleta.
+
+### 6.2 Estrutura visual
+
+**Tela de desbloqueio/criação**
+
+- Fundo `fundo`, cartão central de ~440 px com logo 64 px, título "PassVault" e subtítulo "Seu cofre local e cifrado".
+- Campo de senha mestra com botão mostrar/ocultar e foco inicial.
+- Modo criação: confirmação, medidor de força e caixa de aviso "Não há recuperação da senha mestra".
+- Botão primário largo "Desbloquear" ou "Criar cofre".
+- Link secundário "Restaurar backup".
+- Erro inline em vermelho, sem `messagebox`; limpar ao digitar.
+- Aviso de Caps Lock no Windows quando ativo.
+- Enter envia; Escape não fecha a janela principal.
+
+**Janela principal**
+
+- Cabeçalho de ~56 px: logo + "PassVault" à esquerda; à direita, botões de ícone para tema, backup e bloquear.
+- Linha de ferramentas: campo de busca expansível com placeholder "Buscar por serviço, usuário ou tag…" e botão de limpar; botão de destaque "Nova conta".
+- `PanedWindow` horizontal: tabela (~62%) e cartão de detalhes (~38%).
+- Tabela `Treeview` com colunas Serviço, Usuário e Tags; linhas zebradas; cabeçalho plano; seleção azul suave; rolagem estilizada; ordenação por clique.
+- Detalhes: título do serviço em 18 pt, usuário com botão copiar, senha mascarada com olho e copiar, URL, notas, tags e datas em texto secundário; botão "Editar".
+- Estado vazio com ícone de escudo, texto "Nenhuma conta ainda" e botão "Adicionar primeira conta".
+- Barra de status: "X de Y contas" à esquerda; caminho do cofre elidido à direita; mensagens temporárias em toast.
+- Atalhos existentes preservados: `Ctrl+N`, `Ctrl+E`, `Ctrl+F`, `Ctrl+C`, `Delete`, `Ctrl+L`, `F5`, `Esc`.
+- Menu nativo mantido para descoberta, com "Exibir > Tema claro/escuro/sistema".
+
+**Diálogos**
+
+- Formulários em `Toplevel` modal, mesmo tema, centralizados no pai, redimensionáveis apenas quando necessário.
+- Editor em duas colunas com seções "Básico" e "Detalhes"; validação inline; botão salvar desabilitado enquanto serviço estiver vazio; botão "Gerar senha" ao lado do campo.
+- Gerador com comprimento, classes de caracteres, evitar ambíguos, prévia monoespaçada, medidor de força colorido e ações Copiar/Usar.
+- Backup/restauração com lista de datas e tamanhos, aviso claro e confirmação.
+- Importação com caminho, botão "Escolher…", análise prévia, resumo sem credenciais, aviso de importação repetida e botão Importar desabilitado até analisar.
+- Confirmação destrutiva em diálogo próprio, com botão vermelho e foco inicial em Cancelar.
+- Toast no canto inferior direito para sucessos ("Senha copiada", "Backup criado", "Conta salva"), 3 s, sem bloquear a interação.
+
+### 6.3 Componentes e ícones
+
+Criar em `ui/widgets.py`:
+
+- `Cartao`, `BotaoPrimario`, `BotaoSecundario`, `BotaoPerigo`, `BotaoIcone`.
+- `CampoBusca` com placeholder e botão limpar.
+- `BarraForca` (Canvas) com rótulos Fraca/Média/Forte.
+- `Toast`.
+- `Confirmar`.
+- `EstadoVazio`.
+
+Criar em `ui/icons.py` ícones 16×16/20×20 desenhados em Canvas: busca, olho, olho cortado, copiar, bloquear, adicionar, excluir, chave, escudo, sol, lua, seta. Não depender de emoji nem de fontes de símbolos.
+
+### 6.4 Comportamentos de UX
+
+- Nunca exibir senha na tabela; no painel, sempre mascarada até o usuário clicar em mostrar.
+- Ao trocar a seleção, voltar a senha para mascarada.
+- Copiar senha mostra toast e inicia contagem de 30 s; se o clipboard mudar, não limpar o novo conteúdo.
+- Busca instantânea, sem acentos e sem caixa; preservar seleção por UUID.
+- Ordenação preservada ao editar.
+- Auto-lock limpa chave, clipboard e fecha diálogos.
+- Tema e geometria persistem entre execuções.
+- Nenhum texto cortado em 150% de DPI; testar nomes longos, URLs longas e notas grandes.
+- Foco visível em todos os controles; Tab order lógico; Enter/Escape coerentes.
+- Contraste e tamanho de fonte adequados; não usar apenas cor para indicar estado.
+
+### 6.5 Acessibilidade
+
+- Rótulos associados aos campos.
+- Atalhos documentados no menu e no README.
+- Mensagens de erro claras, sem jargão.
+- Alvos de clique com pelo menos 32 px.
+- Suporte a navegação apenas por teclado.
+
+## 7. Empacotamento `.exe`
+
+### 7.1 Requisitos de build
+
+- Runtime: `cryptography>=42`.
+- Build: `pyinstaller>=6.16`, `cryptography`, `pillow>=10` (apenas para gerar o ícone), `pyinstaller-hooks-contrib`.
+- Recomendar Python 3.12 ou 3.13 para o build; validar se a versão instalada do PyInstaller suporta 3.14. O código deve continuar compatível com Python 3.11+.
+- Criar `requirements-build.txt` com versões fixadas e testadas.
+- PyInstaller não cross-compila: o build deve ocorrer em Windows. Se o ambiente atual for Linux, implemente tudo, valide o código e entregue o workflow/script; não afirme que o `.exe` foi gerado sem tê-lo feito.
+
+### 7.2 Spec e comando
+
+Criar `PassVault.spec` com:
+
+- `collect_all("cryptography")` para binários, dados e hidden imports.
+- `datas` incluindo `passvault/assets` em `passvault/assets`.
+- `console=False`.
+- `icon="passvault/assets/passvault.ico"`.
+- `version="version_info.txt"`.
+- `manifest="app.manifest"`.
+- `upx=False`.
+- `name="PassVault"`.
+- Modo onefile.
+
+Equivalente em linha de comando, para documentação:
+
+```powershell
+pyinstaller --noconfirm --clean --onefile --windowed --name PassVault `
+  --icon passvault/assets/passvault.ico `
+  --version-file version_info.txt `
+  --manifest app.manifest `
+  --add-data "passvault/assets;passvault/assets" `
+  --collect-all cryptography `
+  --noupx `
+  passvault/__main__.py
+```
+
+Validar em uma VM Windows limpa, sem Python instalado.
+
+### 7.3 Ícone, versão e manifesto
+
+- `tools/make_icon.py` com Pillow (build-only): desenhar escudo azul com keyhole, gerar PNGs e ICO multi-resolução; versionar os assets gerados.
+- `version_info.txt`: `FileVersion` e `ProductVersion` `1.1.0.0`; `ProductName` PassVault; `FileDescription` "Gerenciador de senhas local"; `OriginalFilename` `PassVault.exe`; `CompanyName` PassVault; copyright.
+- `app.manifest`: `asInvoker`, `PerMonitorV2`, `longPathAware`.
+- Bump de versão para `1.1.0` em `passvault/__init__.py` e no "Sobre".
+- Sem console: erros fatais via MessageBox nativo e log.
+
+### 7.4 Script de build
+
+Criar `build_windows.ps1`:
+
+1. Ir para a raiz do projeto.
+2. Verificar Python 3.12/3.13 (`py -3.13` ou `python`).
+3. Criar/ativar `.venv-build`.
+4. Instalar `requirements.txt` e `requirements-build.txt`.
+5. Rodar `python -m unittest discover -s tests -v`; abortar em falha.
+6. Gerar ícones se ausentes.
+7. Rodar PyInstaller com `PassVault.spec`.
+8. Executar `dist\PassVault.exe --self-test`; abortar se o código de saída não for 0.
+9. Calcular SHA-256 e tamanho do `.exe`.
+10. Imprimir caminho final e instruções.
+
+Criar também `run_windows.bat` para execução a partir do código:
+
+```bat
+@echo off
+cd /d "%~dp0"
+py -3 -m passvault %*
+```
+
+### 7.5 CI
+
+Criar `.github/workflows/windows.yml`:
+
+- `windows-latest`, Python 3.13.
+- Instalar dependências.
+- Rodar testes.
+- Rodar `build_windows.ps1`.
+- Rodar `dist\PassVault.exe --self-test`.
+- Publicar `PassVault.exe` como artifact.
+- Opcional: job `ubuntu-latest` apenas com testes, para garantir que o Linux não regrediu.
+
+Se o projeto não estiver em um repositório remoto, entregar o workflow mesmo assim e documentar como usá-lo.
+
+### 7.6 Assinatura e SmartScreen
+
+- Não incluir certificado no repositório.
+- Documentar que o `.exe` não assinado pode exibir aviso do SmartScreen.
+- Fornecer comando opcional de assinatura com `signtool` e timestamp, condicionado a um certificado do usuário.
+- Não usar UPX; evitar falsos positivos de antivírus.
+- Documentar que uma VM limpa e a assinatura reduzem atritos.
+
+## 8. Arquitetura de arquivos
+
+Adicionar:
 
 ```text
-/home/ianfalcao/passvault/
-├── passvault/
-│   ├── __init__.py          # versão e metadados
-│   ├── __main__.py          # ponto de entrada da GUI
-│   ├── constants.py         # caminhos, tempos, limites, versão do formato
-│   ├── errors.py            # exceções do domínio
-│   ├── crypto.py            # scrypt, AES-GCM, serialização do cofre
-│   ├── storage.py           # caminhos, permissões, escrita atômica, backup, lock
-│   ├── vault.py             # modelo, CRUD, busca, sessão e troca de senha
-│   ├── generator.py         # geração e força de senhas
-│   ├── clipboard.py         # wl-copy com fallback tkinter
-│   ├── migrate.py           # reparo do JSON legado e normalização
-│   ├── app.py               # janela principal e fluxo de telas
-│   └── dialogs.py           # diálogos modais
-├── tests/
-│   ├── fixtures/legacy_broken.json
-│   ├── test_crypto.py
-│   ├── test_storage.py
-│   ├── test_vault.py
-│   ├── test_generator.py
-│   └── test_migrate.py
-├── run.sh
-├── requirements.txt
-└── README.md
+passvault/
+├── plataforma.py            # caminhos, lock, permissões, DPI, erro fatal
+├── config.py                # tema, geometria, último import
+├── clipboard_windows.py     # backend ctypes
+├── ui/
+│   ├── __init__.py
+│   ├── theme.py             # paletas, fontes, aplicar_tema, contraste
+│   ├── widgets.py           # cartões, botões, toast, barra de força
+│   └── icons.py             # ícones em Canvas
+└── assets/
+    ├── passvault.ico
+    ├── passvault.png
+    └── logo.png
+
+tools/make_icon.py
+PassVault.spec
+version_info.txt
+app.manifest
+build_windows.ps1
+run_windows.bat
+requirements-build.txt
+.github/workflows/windows.yml
 ```
 
-Responsabilidades:
+Alterar:
 
-- `crypto.py`: derivar chave, cifrar/decifrar bytes, montar/validar o formato binário. Não conhece GUI nem caminhos.
-- `storage.py`: ler/gravar arquivo, permissões, backup, lock de instância, limites de tamanho. Não conhece GUI.
-- `vault.py`: dados em memória, CRUD, busca, sessão desbloqueada, troca de senha. Não conhece GUI.
-- `migrate.py`: reparo e normalização do legado, retornando dados prontos para `vault.py`.
-- `app.py`/`dialogs.py`: apenas apresentação e orquestração.
-- `clipboard.py` e `generator.py`: utilitários independentes e testáveis.
+- `storage.py`, `migrate.py`, `constants.py`, `clipboard.py`, `__main__.py`.
+- `app.py` e `dialogs.py` para usar tema, widgets, toasts, validação inline e configuração.
+- `README.md`.
+- `passvault/__init__.py` (versão 1.1.0).
 
-## 9. Especificação criptográfica
+Não alterar:
 
-- KDF: `scrypt` do módulo `cryptography.hazmat.primitives.kdf.scrypt`
-  - `n=2**15` (32768), `r=8`, `p=1`, `dklen=32`
-  - `maxmem=64 * 1024 * 1024`
-  - salt aleatório de 16 bytes via `secrets.token_bytes(16)`
-- Cifra: `AESGCM` com chave de 32 bytes, nonce de 12 bytes via `secrets.token_bytes(12)`
-- AAD: os bytes exatos do cabeçalho JSON, para autenticar os parâmetros do KDF
-- Salt é gerado na criação do cofre e na troca de senha mestra; o nonce é novo em **toda** gravação
-- A chave derivada fica apenas na sessão em memória; a senha mestra é descartada após derivar
-- No lock, sobrescrever a chave com zeros (best effort) e descartar a referência
-- Erros:
-  - `InvalidTag` → `InvalidMasterPassword` com mensagem "Senha mestra incorreta ou cofre corrompido."
-  - JSON inválido, magic errado, versão desconhecida, truncamento → `VaultCorrupted`
-- Validar parâmetros do cabeçalho **antes** de derivar a chave, para impedir arquivo malicioso de consumir memória:
-  - `n` entre `2**14` e `2**20` e potência de 2
-  - `r` entre 1 e 32
-  - `p` entre 1 e 16
-  - `dklen == 32`
-  - salt com exatamente 16 bytes; nonce com exatamente 12 bytes
-  - cabeçalho com no máximo 4096 bytes; arquivo com no máximo 16 MiB
+- `crypto.py` (exceto se necessário para testes de plataforma, sem mudar o formato).
+- `vault.py` (exceto ajustes mínimos de sessão, se indispensáveis).
+- Formato PVLT, parâmetros de KDF, tamanhos de salt/nonce.
 
-## 10. Formato do cofre
+## 9. Testes
 
-Arquivo binário, big-endian:
+Manter os 30 testes atuais passando no Linux.
 
-```text
-[0..3]    magic "PVLT" (4 bytes ASCII)
-[4]       versão do formato = 1 (uint8)
-[5..8]    tamanho do cabeçalho (uint32 big-endian)
-[9..]     cabeçalho JSON UTF-8 (tamanho informado)
-[...]     ciphertext AES-GCM (inclui tag de 16 bytes no final)
-```
+Adicionar/adaptar:
 
-Cabeçalho:
+- `test_plataforma.py`: resolução de pastas por SO (com `patch` de `os.name` e env), `PASSVAULT_HOME`, caminho legado, lock POSIX/Windows (mock), permissões no-op no Windows.
+- `test_storage.py`: pular asserções de modo POSIX no Windows; testar retry de `os.replace`, ausência de hardlink, backup atômico, corrupção e lock.
+- `test_migrate.py`: pular `0600/0777` no Windows; testar backup e normalização em ambos.
+- `test_clipboard_windows.py`: API falsa injetada; verificar `CF_UNICODETEXT`, UTF-16LE, sequência de clipboard, não limpar conteúdo do usuário, fallback em falha.
+- `test_clipboard.py` (ou ajuste em `test_generator.py`): seleção de backend por plataforma; Wayland continua funcionando.
+- `test_config.py`: ida e volta, arquivo corrompido, tema/geometria.
+- `test_theme.py`: contraste mínimo 4,5:1 nos dois temas; fontes com fallback.
+- `test_self_test.py`: autoteste sem GUI em diretório temporário.
+- Nenhum teste pode usar o cofre real, o `4.json` real ou segredos reais.
 
-```json
-{
-  "v": 1,
-  "kdf": "scrypt",
-  "n": 32768,
-  "r": 8,
-  "p": 1,
-  "dklen": 32,
-  "salt": "<base64 de 16 bytes>",
-  "nonce": "<base64 de 12 bytes>"
-}
-```
-
-Conteúdo em claro (somente em memória), serializado de forma compacta:
-
-```json
-{
-  "version": 1,
-  "meta": {
-    "created_at": "2026-11-23T00:00:00+00:00",
-    "updated_at": "2026-11-23T00:00:00+00:00",
-    "legacy_import": {
-      "source": "/home/ianfalcao/my/4.json",
-      "sha256": "<hash dos bytes originais>",
-      "imported_at": "2026-11-23T00:00:00+00:00",
-      "count": 40
-    }
-  },
-  "entries": [
-    {
-      "id": "<uuid4>",
-      "service": "Exemplo",
-      "username": "usuario",
-      "password": "segredo",
-      "url": "",
-      "notes": "",
-      "tags": ["pessoal"],
-      "extra": {},
-      "created_at": "2026-11-23T00:00:00+00:00",
-      "updated_at": "2026-11-23T00:00:00+00:00"
-    }
-  ]
-}
-```
-
-Regras:
-
-- `service` obrigatório e não vazio; os demais campos podem ser vazios
-- `tags` é lista de strings, sem duplicatas case-insensitive
-- `extra` preserva campos desconhecidos do legado
-- Datas em ISO 8601 UTC com timezone
-- `meta.legacy_import` é opcional e existe apenas após importação
-- IDs são UUID4 e imutáveis
-
-## 11. Armazenamento e integridade
-
-Caminhos:
-
-- Diretório: `$XDG_DATA_HOME/passvault` ou `~/.local/share/passvault`
-- Cofre: `vault.enc`
-- Backup anterior: `vault.enc.bak`
-- Backups datados: `backups/vault-AAAAMMDD-HHMMSS.enc`
-- Lock de instância: `.lock`
-- Log: `$XDG_STATE_HOME/passvault/passvault.log` ou `~/.local/state/passvault/passvault.log`
-
-Permissões:
-
-- Diretório `0700`, cofre e backups `0600`
-- Ao abrir, se o cofre tiver bits de grupo/outros, corrigir para `0600` e registrar aviso
-- `umask` não pode ser a única proteção: usar `os.open`/`os.fchmod` explicitamente
-
-Gravação atômica:
-
-1. Criar temporário no mesmo diretório com `tempfile.mkstemp`, `fchmod(0o600)`
-2. Escrever, `flush`, `os.fsync`
-3. Fechar
-4. Se o cofre existir, copiar para `vault.enc.bak` e ajustar permissão
-5. `os.replace(temp, vault.enc)`
-6. `fsync` no descritor do diretório
-7. Em qualquer exceção, remover o temporário e não tocar no cofre
-
-Instância única: adquirir `fcntl.flock(LOCK_EX | LOCK_NB)` no `.lock` ao iniciar. Se falhar, mostrar "O PassVault já está aberto em outra janela." e encerrar.
-
-Log: `RotatingFileHandler` (1 MB, 2 backups), nível INFO. Nunca registrar senhas, conteúdo do cofre, chaves, salts ou nonces completos. Registrar apenas eventos: criação, desbloqueio, falha de desbloqueio, gravação, backup, importação, lock.
-
-## 12. Interface gráfica
-
-Janela principal: título "PassVault", 1000x650, mínimo 860x560, tema `clam`, fonte padrão do sistema.
-
-Fluxo:
-
-1. Adquirir lock de instância.
-2. Se não existe cofre → diálogo "Criar cofre".
-3. Se existe → diálogo "Desbloquear".
-4. Só após sucesso montar a janela principal.
-
-Layout:
-
-- Barra superior com busca e botões: Adicionar, Editar, Excluir, Copiar senha, Gerar, Backup, Bloquear.
-- `ttk.PanedWindow` horizontal: tabela à esquerda (~60%), detalhes à direita (~40%).
-- Tabela `ttk.Treeview` com colunas Serviço, Usuário, Tags; seleção única; cabeçalhos ordenáveis; menu de contexto com Editar, Copiar senha, Excluir.
-- Painel de detalhes com serviço, usuário, senha mascarada + Mostrar/Ocultar, URL, notas, tags, datas de criação/atualização e botão Copiar.
-- Barra de status com contagem, caminho do cofre e mensagens temporárias.
-
-Comportamentos:
-
-- Busca com `trace_add("write", ...)` e normalização `unicodedata.normalize("NFKD", texto).casefold()`.
-- Preservar seleção após editar; selecionar a conta recém-criada.
-- Estado vazio com texto "Nenhuma conta encontrada".
-- Confirmações com `messagebox.askyesno` para exclusão, troca de senha, restauração e importação.
-- Senhas sempre com `show="•"`; nunca logar o conteúdo de `Entry`.
-- Gerador abre diálogo modal e devolve a senha ao campo de origem.
-- Auto-lock via `bind_all` em `<KeyPress>` e `<Button>`; timer com `after(5000, ...)`; ao bloquear, fechar diálogos abertos, limpar clipboard e voltar ao desbloqueio.
-- Erros de domínio → `messagebox.showerror` com texto amigável; detalhe técnico apenas no log.
-
-## 13. Migração do legado
-
-Implementar `repair_json_text(texto: str) -> str` com um scanner que respeite strings e escapes:
-
-- Percorrer caractere a caractere, rastreando `in_string`, `escape` e profundidade de `{`/`[`.
-- Quando um `}` fora de string fecha um objeto dentro do array de nível 1 e o próximo caractere não branco é `{`, inserir uma vírgula.
-- Não alterar conteúdo dentro de strings.
-- Validar o resultado com `json.loads`; se falhar, levantar `LegacyParseError` com linha e coluna, sem gravar nada.
-- Ler o arquivo com `encoding="utf-8-sig"` para remover o BOM.
-
-Normalização de cada conta (apenas dicionários):
-
-- `service`: `service` ou "Desconhecido"
-- `username`: primeiro não vazio entre `username`, `email`, `user`, `id`
-- `password`: primeiro não vazio entre `password`, `pin`, `key`, `code`
-- `extra`: todos os outros campos, convertidos para string
-- `tags`: `[]`; `notes`: `""`; `url`: `""`
-- `id`: UUID4; datas: agora em UTC
-- Duplicatas de serviço/usuário são permitidas e mantidas
-- Contar importados e ignorados (entradas que não são dicionário)
-
-Procedimento:
-
-1. Calcular SHA-256 dos bytes originais.
-2. Se `meta.legacy_import.sha256` for igual, avisar "este arquivo já foi importado" e só continuar com confirmação explícita do usuário.
-3. Reparar, validar e normalizar em memória.
-4. Criar backup `4.json.bak-AAAAMMDD-HHMMSS` com `0600` e ajustar o original para `0600`.
-5. Gravar o cofre com os novos registros e atualizar `meta.legacy_import`.
-6. Nunca apagar o original; informar que a exclusão é manual, após conferência.
-
-Também disponibilizar execução sem GUI para diagnóstico e testes:
-
-```bash
-python3 -m passvault.migrate --source /home/ianfalcao/my/4.json --dry-run
-python3 -m passvault.migrate --source /home/ianfalcao/my/4.json
-```
-
-Nesse modo, pedir a senha mestra com `getpass`, nunca por argumento. `--dry-run` não grava nada.
-
-## 14. Testes automatizados
-
-Criar `tests/fixtures/legacy_broken.json` com BOM, vírgulas ausentes e chaves variadas, usando **apenas dados falsos** (ex.: `SENHA-FAKE-123`). Cobrir:
-
-`test_crypto.py`
-- roundtrip cifra/decifra
-- senha errada → `InvalidMasterPassword`
-- cabeçalho adulterado → falha de autenticação
-- ciphertext adulterado → falha de autenticação
-- salt e nonce diferentes em gravações consecutivas
-- parâmetros fora dos limites → `VaultCorrupted` sem derivar chave
-- arquivo truncado, magic errado e versão desconhecida
-
-`test_storage.py`
-- permissões `0600` no cofre e `0700` no diretório
-- escrita atômica preserva o cofre anterior em caso de erro simulado
-- backup `.bak` criado antes da substituição
-- temporário removido em caso de exceção
-- cofre inexistente e cofre corrompido geram erros corretos
-- lock de instância impede segunda abertura
-
-`test_vault.py`
-- criar, adicionar, editar, excluir e buscar
-- busca insensível a acento e caixa
-- tags sem duplicatas case-insensitive
-- troca de senha mestra: senha antiga deixa de abrir, nova abre
-- lock limpa a chave e impede operações
-- serialização/desserialização preserva todos os campos
-
-`test_generator.py`
-- comprimento correto
-- ao menos um caractere de cada classe selecionada
-- exclusão de ambíguos
-- comprimento inválido rejeitado
-
-`test_migrate.py`
-- reparo do JSON quebrado com BOM
-- normalização de `email/username/id/user` e `password/pin/key/code`
-- preservação de campos desconhecidos em `extra`
-- contagem de importados e ignorados
-- aborto sem gravar em JSON irrecuperável
-- detecção de importação duplicada pelo SHA-256
-
-Execução obrigatória:
+Comandos obrigatórios:
 
 ```bash
 cd /home/ianfalcao/passvault
 python3 -m unittest discover -s tests -v
 ```
 
-Todos os testes devem passar. Nenhum teste pode usar `/home/ianfalcao/my/4.json` nem o cofre real.
+```powershell
+cd C:\caminho\passvault
+python -m unittest discover -s tests -v
+```
 
-## 15. Critérios de aceite
+CI deve rodar a suíte no Linux e no Windows.
 
-1. `python3 -m unittest discover -s tests -v` termina com todos os testes OK.
-2. `python3 -m passvault` abre a GUI no Wayland e permite criar, desbloquear, adicionar, editar, buscar, copiar, gerar, excluir, bloquear e sair.
-3. `vault.enc` começa com `PVLT`, não é JSON legível e não contém uma senha fictícia usada nos testes (`grep -a` não encontra).
-4. `stat -c %a ~/.local/share/passvault/vault.enc` retorna `600`; o diretório retorna `700`.
-5. Senha mestra errada exibe mensagem amigável e não altera o arquivo.
-6. Copiar senha coloca o valor no clipboard e, após 30 s, o clipboard não contém mais o segredo.
-7. Auto-lock ocorre após 5 min e limpa chave e clipboard.
-8. Troca de senha mestra mantém todas as contas e invalida a senha antiga.
-9. Backup datado é criado e a restauração funciona.
-10. A importação do `4.json` real importa todas as contas válidas, cria backup datado, mantém o original e corrige sua permissão para `600`.
-11. Nenhum segredo aparece em log, terminal, argv, ambiente ou nome de arquivo.
-12. `README.md` cobre instalação, uso, atalhos, backup/restauração, migração, segurança, testes e solução de problemas.
+## 10. Critérios de aceite
 
-## 16. Documentação (`README.md`)
+1. No Linux, os 30 testes originais continuam passando, além dos novos.
+2. No Windows 10/11, `python -m passvault` abre a interface sem erros.
+3. `PassVault.exe` abre em VM limpa sem Python instalado, sem janela de console.
+4. Criar cofre, desbloquear, adicionar, editar, buscar, copiar, gerar, excluir, bloquear, sair, backup, restaurar, trocar senha mestra e importar legado funcionam no Windows.
+5. Copiar senha no Windows limpa o clipboard após 30 s, não apaga um conteúdo novo copiado pelo usuário e limpa ao bloquear/sair.
+6. Cofre criado no Linux abre no Windows e vice-versa, sem conversão.
+7. `%LOCALAPPDATA%\PassVault\vault.enc` é usado por padrão; logs ficam em `logs\passvault.log`; nenhum segredo aparece em log.
+8. Instância única funciona no Windows (segunda abertura mostra aviso).
+9. Interface sem aparência padrão cinza do Tk: paleta, tipografia, espaçamento, tabela, detalhes e diálogos consistentes.
+10. Tema claro/escuro alterna corretamente em todos os widgets e persiste entre execuções.
+11. Layout íntegro em 100%, 150% e 200% de DPI, sem texto cortado.
+12. Ícone aparece na janela, no Explorer e na taskbar; propriedades do `.exe` mostram versão 1.1.0.
+13. `dist\PassVault.exe --self-test` retorna 0.
+14. `build_windows.ps1` funciona em Windows limpo e gera `dist\PassVault.exe`.
+15. Workflow de CI produz o artifact do `.exe`.
+16. README atualizado com Windows, build, caminhos, backup, portabilidade, SmartScreen, antivírus e solução de problemas.
+17. Nenhuma dependência de runtime nova além de `cryptography`; nenhum uso de `pywin32`, `pyperclip`, `customtkinter` ou `ttkbootstrap`.
+18. Nenhum `import fcntl` incondicional, nenhum `O_NOFOLLOW`/`O_DIRECTORY`/`fchmod` sem proteção, nenhum caminho Linux fixo.
 
-Incluir, em português:
+## 11. Documentação
 
-- O que é o PassVault e o que ele não é
-- Requisitos: Python 3.11+, `cryptography`, tkinter, `wl-clipboard` (opcional)
-- Como executar (`./run.sh` e `python3 -m passvault`)
-- Primeiro uso e criação do cofre
-- Lista de atalhos
-- Onde ficam cofre, backups e log
-- Como fazer backup e restaurar
-- Como migrar o `4.json`, o que é alterado e como apagar o original com segurança
-- Formato do cofre em alto nível
-- Modelo de ameaças: protege contra roubo de disco/backup/nuvem; não protege contra keylogger, malware, sessão comprometida ou senha mestra fraca
-- Aviso de que não há recuperação de senha mestra
-- Como rodar os testes
-- Solução de problemas: tkinter ausente, clipboard no Wayland, cofre corrompido, restaurar `.bak`
+Atualizar `README.md` com:
 
-## 17. Ordem de implementação
+- Visão geral e capturas de tela (se possível).
+- Requisitos por SO.
+- Execução a partir do código no Linux e Windows.
+- Build do `.exe` passo a passo e via CI.
+- Tabela de caminhos:
+  - Linux: dados, backups, log.
+  - Windows: `%LOCALAPPDATA%\PassVault\...`.
+- Como migrar o cofre do Linux para o Windows.
+- Como importar o `4.json` e apagar o original com segurança.
+- Atalhos e temas.
+- Backup e restauração.
+- Segurança e modelo de ameaças, incluindo ACL do Windows e limitações do clipboard/histórico.
+- SmartScreen, assinatura opcional e falsos positivos de antivírus.
+- Solução de problemas: tkinter ausente, DLL do `cryptography`, Tcl/Tk, DPI, clipboard ocupado, cofre corrompido, restaurar `.bak`.
+- Como desinstalar (apagar exe e pasta de dados).
+- Aviso de que não há recuperação de senha mestra.
 
-1. Scaffold, `constants.py`, `errors.py`, `crypto.py`, `storage.py`, `vault.py` e testes do núcleo.
-2. `generator.py`, `clipboard.py` e testes.
-3. `migrate.py` e testes com fixture.
-4. GUI: criação, desbloqueio, lista, detalhes, CRUD e busca.
-5. Diálogos restantes: gerador, backup, restauração, troca de senha, importação, auto-lock, atalhos.
-6. Rodar testes completos, smoke test manual e só então executar a migração real do `4.json`, com backup e conferência da contagem.
-7. Finalizar README e `run.sh`.
+## 12. Ordem de implementação
 
-## 18. Estilo e restrições
+1. `plataforma.py` + refatoração de `storage.py`, `migrate.py` e `constants.py`; testes multiplataforma.
+2. Backend de clipboard Windows + testes; preservar Wayland/Tk.
+3. `config.py`, `ui/theme.py`, `ui/widgets.py`, `ui/icons.py`; refatorar `app.py` e `dialogs.py`.
+4. Ícone/assets, DPI, taskbar, erro fatal nativo e `--self-test`.
+5. `PassVault.spec`, `version_info.txt`, `app.manifest`, `build_windows.ps1`, `run_windows.bat`, `requirements-build.txt`.
+6. Workflow de CI; rodar testes no Linux e Windows; gerar o `.exe`.
+7. Validação manual em Windows (checklist) e atualização do README.
 
-- Type hints em todas as funções públicas; `dataclasses` para modelos.
-- Exceções próprias em `errors.py`, sem `except:` nu.
-- Nada de variáveis globais mutáveis; constantes em `constants.py`.
-- Linhas de até 100 colunas; nomes e mensagens em português.
-- `subprocess` sempre com lista de argumentos e sem `shell=True`.
-- Não usar `print` para dados sensíveis; usar `logging`.
-- Não adicionar dependências além de `cryptography`.
-- Não criar instalador, serviço systemd, sincronização ou integração com navegador.
+## 13. Restrições e não objetivos
 
-## 19. Não objetivos
+- Não mudar o formato PVLT v1 nem os parâmetros criptográficos.
+- Não adicionar sincronização, nuvem, telemetria, rede ou atualização automática.
+- Não adicionar TOTP, Windows Hello, passkeys ou autofill de navegador.
+- Não criar instalador MSI/Inno Setup como requisito; o alvo é o `.exe` portátil. Um instalador pode ser documentado como opcional.
+- Não usar bibliotecas de UI externas.
+- Não usar UPX.
+- Não apagar nem modificar o cofre real ou o `4.json` durante testes.
+- Não afirmar validação em Windows sem executar em Windows/CI.
+- Não imprimir segredos em terminal, log, teste ou relatório.
 
-- Sincronização entre dispositivos ou nuvem
-- Extensão de navegador ou preenchimento automático
-- TOTP/2FA, passkeys ou chaves de segurança
-- Múltiplos cofres ou multiusuário
-- Recuperação de senha mestra
-- Suporte a Windows/macOS
-- Auditoria de senhas vazadas ou integração com APIs externas
+## 14. Instruções finais e relatório
 
-## 20. Instruções finais ao agente
-
-- Trabalhe até concluir todos os critérios de aceite; não peça confirmações intermediárias.
-- Nunca imprima, copie para teste ou registre em log os segredos reais do `4.json`.
-- Não apague nem sobrescreva o `4.json`; apenas crie backup e ajuste a permissão durante a migração.
-- Se a GUI não puder ser aberta no ambiente, valide toda a lógica pelos testes e registre no relatório o que ficou para verificação manual.
-- Ao terminar, entregue um relatório com: arquivos criados, saída completa dos testes, contagem de contas migradas, caminho do backup gerado, checklist de aceite e limitações conhecidas.
+- Leia o código existente antes de alterar; preserve o comportamento e os testes.
+- Trabalhe até cumprir todos os critérios de aceite; não peça confirmações intermediárias.
+- Se o ambiente atual for Linux, implemente e valide o que for possível, crie o workflow Windows e informe exatamente como gerar o `.exe`.
+- Se houver Windows disponível, gere o `.exe`, rode o autoteste e faça o checklist manual.
+- Ao terminar, entregue:
+  - arquivos criados/alterados;
+  - saída dos testes no Linux e no Windows;
+  - caminho, tamanho e SHA-256 do `PassVault.exe`;
+  - resultado do `--self-test`;
+  - checklist de aceite com o que foi validado e o que ficou pendente;
+  - limitações conhecidas e próximos passos.
