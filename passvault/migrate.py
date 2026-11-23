@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from .constants import LEGADO, MAX_ARQUIVO
+from . import plataforma as so
+from .constants import MAX_ARQUIVO
 from .errors import DadosInvalidos, ErroPassVault, LegacyParseError
 from .storage import Armazenamento, configurar_log, sincronizar, tratar_io
 from .vault import Cofre, Conta, agora, validar_senha
@@ -123,7 +124,7 @@ class Analise:
 
 
 def _abrir(origem: Path) -> BinaryIO:
-    fd = os.open(origem, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = so.abrir_regular(origem, os.O_RDONLY)
     return os.fdopen(fd, "rb")
 
 
@@ -167,13 +168,13 @@ def _backup_legado(origem: Path, dados: bytes) -> Path:
     while True:
         copia = origem.with_name(f"{origem.name}.bak-{data:%Y%m%d-%H%M%S}")
         try:
-            fd = os.open(copia, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            fd = so.abrir_regular(copia, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
             break
         except FileExistsError:
             data += timedelta(seconds=1)
     try:
         with os.fdopen(fd, "wb") as f:
-            os.fchmod(fd, 0o600)
+            so.proteger(fd)
             f.write(dados)
             f.flush()
             os.fsync(fd)
@@ -193,8 +194,9 @@ def importar(analise: Analise, cofre: Cofre, permitir_repetida: bool = False) ->
         if hashlib.sha256(dados).hexdigest() != analise.sha256:
             raise DadosInvalidos("O arquivo mudou. Analise novamente.")
         copia = _backup_legado(analise.origem, dados)
-        os.fchmod(f.fileno(), 0o600)
-        os.fsync(f.fileno())
+        so.proteger(f.fileno())
+        if not so.WINDOWS:
+            os.fsync(f.fileno())
     cofre.incorporar(analise.contas, dict(source=str(analise.origem), sha256=analise.sha256,
                                          imported_at=agora(), count=len(analise.contas)))
     logging.getLogger("passvault").info("Importação.")
@@ -204,13 +206,13 @@ def importar(analise: Analise, cofre: Cofre, permitir_repetida: bool = False) ->
 def principal() -> int:
     """Executa o diagnóstico ou a migração usando entrada oculta no terminal."""
     parser = argparse.ArgumentParser(description="Migração local para o PassVault")
-    parser.add_argument("--source", type=Path, default=LEGADO)
+    parser.add_argument("--source", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true", help="analisar sem gravar")
     args = parser.parse_args()
     disco = Armazenamento()
     cofre = Cofre(disco)
     try:
-        analise = analisar(args.source)
+        analise = analisar(args.source or so.caminho_legado_padrao())
         if args.dry_run:
             print(analise.resumo([]))
             return 0
@@ -245,6 +247,10 @@ def principal() -> int:
         if (len(cofre.conteudo.contas) != anterior + len(analise.contas)
                 or not analise.repetida(cofre)):
             raise DadosInvalidos("Não foi possível conferir a contagem após a importação.")
+        from .config import Config
+        config = Config.ler(disco.pasta)
+        config.ultimo_import = str(analise.origem)
+        config.salvar(disco.pasta)
         print(f"Importadas: {len(analise.contas)}. Backup: {copia}. Original preservado.")
         return 0
     except ErroPassVault as erro:

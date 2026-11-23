@@ -1,6 +1,7 @@
 """Migração de um legado sintético, incluindo BOM e objetos adjacentes."""
 
 import json
+import os
 import shutil
 import stat
 import tempfile
@@ -41,7 +42,8 @@ class Migracao(unittest.TestCase):
         self.assertEqual(a.contas[1].extra, {"email": "reserva"})
         self.assertEqual(json.loads(a.contas[2].extra["info"]), {"a": 1})
         self.assertEqual((len(a.contas), a.ignoradas, a.duplicadas([])), (5, 1, 1))
-        self.assertEqual(stat.S_IMODE(self.origem.stat().st_mode), 0o777)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(self.origem.stat().st_mode), 0o777)
         self.assertEqual(list(self.pasta.iterdir()), [self.origem])
 
     def test_importacao_backup_e_repeticao(self) -> None:
@@ -51,7 +53,8 @@ class Migracao(unittest.TestCase):
         copia = importar(a, self.cofre)
         for arq in (copia, self.origem):
             self.assertEqual(arq.read_bytes(), original)
-            self.assertEqual(stat.S_IMODE(arq.stat().st_mode), 0o600)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(arq.stat().st_mode), 0o600)
         self.cofre.bloquear()
         self.cofre.desbloquear("mestra-fake")
         self.assertTrue(a.repetida(self.cofre))

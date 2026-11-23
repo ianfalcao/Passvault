@@ -20,6 +20,7 @@ class Disco(unittest.TestCase):
         self.d.adquirir()
         self.addCleanup(self.d.liberar)
 
+    @unittest.skipIf(os.name == "nt", "Modos POSIX")
     def test_permissoes_e_correcao(self) -> None:
         self.d.gravar(b"a")
         self.assertEqual(stat.S_IMODE(self.d.pasta.stat().st_mode), 0o700)
@@ -33,7 +34,8 @@ class Disco(unittest.TestCase):
         self.d.gravar(b"a")
         self.d.gravar(b"b")
         self.assertEqual(self.d.anterior.read_bytes(), b"a")
-        self.assertEqual(stat.S_IMODE(self.d.anterior.stat().st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(self.d.anterior.stat().st_mode), 0o600)
 
     def test_erro_de_substituicao_remove_temporarios(self) -> None:
         self.d.gravar(b"original")
@@ -49,6 +51,7 @@ class Disco(unittest.TestCase):
         self.assertEqual(self.d.ler(), b"original")
         self.assertFalse(list(self.d.pasta.glob(".pv-*")))
 
+    @unittest.skipIf(os.name == "nt", "fsync de diretório POSIX")
     def test_falha_de_fsync_do_diretorio_reverte(self) -> None:
         self.d.gravar(b"original")
         with patch("passvault.storage.sincronizar", side_effect=[None, OSError()]):
@@ -79,4 +82,5 @@ class Disco(unittest.TestCase):
         copias = self.d.listar()
         self.assertEqual([self.d.ler_backup(c.caminho) for c in copias],
                          [bytes([i]) for i in range(6, 1, -1)])
-        self.assertTrue(all(stat.S_IMODE(c.caminho.stat().st_mode) == 0o600 for c in copias))
+        if os.name != "nt":
+            self.assertTrue(all(stat.S_IMODE(c.caminho.stat().st_mode) == 0o600 for c in copias))

@@ -5,8 +5,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Callable
 
-from .constants import LEGADO
-from .errors import DadosInvalidos
+from .plataforma import caminho_legado_padrao
+from .ui.widgets import BarraForca, BotaoPrimario, centralizar
+from .errors import DadosInvalidos, ErroPassVault
 from .generator import Opcoes
 from .migrate import Analise, analisar, importar
 from .vault import Conta, validar_senha
@@ -46,6 +47,11 @@ class Dialogo(tk.Toplevel):
         self.bind("<Escape>", lambda _: self.fechar())
         self.protocol("WM_DELETE_WINDOW", self.fechar)
         self.grab_set()
+        self.after_idle(self.preparar)
+
+    def preparar(self) -> None:
+        self.app.tema.colorir(self)
+        centralizar(self, self.master)
 
     def fechar(self) -> None:
         """Fecha e devolve a modalidade ao pai, se houver."""
@@ -77,12 +83,24 @@ class Dialogo(tk.Toplevel):
 
     def acoes(self, *botoes: tuple[str, Callable[[], None]]) -> None:
         """Adiciona ações e cancelamento."""
+        self.erro = ttk.Label(self.corpo, style="Erro.TLabel", wraplength=420)
+        self.erro.grid(row=self.linha, column=0, columnspan=3, sticky="w")
+        self.linha += 1
+        self.botoes = {}
         barra = ttk.Frame(self.corpo)
         barra.grid(row=self.linha, column=0, columnspan=3, sticky="e", pady=(12, 0))
         self.linha += 1
         ttk.Button(barra, text="Cancelar", command=self.fechar).pack(side="left", padx=3)
         for nome, comando in botoes:
-            ttk.Button(barra, text=nome, command=comando).pack(side="left", padx=3)
+            def executar(acao=comando) -> None:
+                try:
+                    self.erro.configure(text="")
+                    acao()
+                except ErroPassVault as exc:
+                    self.erro.configure(text=str(exc))
+            botao = BotaoPrimario(barra, text=nome, command=executar)
+            botao.pack(side="left", padx=3)
+            self.botoes[nome] = botao
 
 
 class Gerar(Dialogo):
@@ -106,6 +124,10 @@ class Gerar(Dialogo):
                 row=self.linha, column=0, columnspan=2, sticky="w")
             self.linha += 1
         self.resultado = self.campo("Senha gerada", secreto=True)
+        self.resultado.configure(font=app.tema.mono)
+        self.medidor = BarraForca(self.corpo, app.tema)
+        self.medidor.grid(row=self.linha, column=0, columnspan=3, sticky="ew")
+        self.linha += 1
         self.forca = ttk.Label(self.corpo)
         self.forca.grid(row=self.linha, column=0, columnspan=3, sticky="w")
         self.linha += 1
@@ -124,6 +146,7 @@ class Gerar(Dialogo):
         self.resultado.delete(0, "end")
         self.resultado.insert(0, senha)
         self.resultado.configure(state="readonly")
+        self.medidor.definir(opc.entropia())
         self.forca.configure(text=f"Entropia da senha gerada: {opc.entropia():.0f} bits")
 
     def usar(self) -> None:
@@ -142,17 +165,46 @@ class Editor(Dialogo):
     def __init__(self, app: "Aplicacao", conta: Conta | None = None) -> None:
         super().__init__(app, "Editar conta" if conta else "Adicionar conta")
         self.identificador = conta.id if conta else None
+        base = self.corpo
+        self.resizable(True, False)
+        secoes = ttk.Frame(base)
+        secoes.grid(row=0, column=0, columnspan=3, sticky="ew")
+        secoes.columnconfigure((0, 1), weight=1)
+        def secao(nome: str, coluna: int) -> None:
+            self.corpo = ttk.Frame(secoes, padding=8)
+            self.corpo.grid(row=0, column=coluna, sticky="nsew")
+            self.corpo.columnconfigure(1, weight=1)
+            self.linha = 0
+            ttk.Label(self.corpo, text=nome, style="Subtitulo.TLabel").grid(
+                row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+            self.linha += 1
+        secao("Básico", 0)
         self.servico = self.campo("Serviço *", conta.service if conta else "")
         self.usuario = self.campo("Usuário", conta.username if conta else "")
         self.senha = self.campo("Senha", conta.password if conta else "", True)
+        for campo in (self.servico, self.usuario, self.senha):
+            campo.configure(width=16)
+        ttk.Button(self.corpo, text="Gerar senha", command=lambda: Gerar(
+            app, self, self.senha)).grid(row=self.linha, column=1, sticky="w")
+        secao("Detalhes", 1)
         self.url = self.campo("URL", conta.url if conta else "")
         self.tags = self.campo("Tags (vírgulas)", ", ".join(conta.tags) if conta else "")
+        self.url.configure(width=18)
+        self.tags.configure(width=18)
         ttk.Label(self.corpo, text="Notas").grid(row=self.linha, column=0, sticky="nw")
-        self.notas = tk.Text(self.corpo, height=5, width=42, wrap="word", exportselection=False)
-        self.notas.grid(row=self.linha, column=1, columnspan=2, sticky="ew")
+        self.notas = tk.Text(self.corpo, height=5, width=18, wrap="word", exportselection=False)
+        self.notas.grid(row=self.linha, column=1, sticky="ew")
         self.notas.insert("1.0", conta.notes if conta else "")
-        self.linha += 1
-        self.acoes(("Gerar senha", lambda: Gerar(app, self, self.senha)), ("Salvar", self.salvar))
+        self.corpo, self.linha = base, 1
+        self.acoes(("Salvar", self.salvar))
+        self.nome = tk.StringVar(self, value=self.servico.get())
+        self.servico.configure(textvariable=self.nome)
+        def validar(*_) -> None:
+            ok = bool(self.nome.get().strip())
+            self.botoes["Salvar"].state(["!disabled" if ok else "disabled"])
+            self.erro.configure(text="" if ok else "Informe o nome do serviço.")
+        self.nome.trace_add("write", validar)
+        validar()
         self.servico.focus_set()
 
     def salvar(self) -> None:
@@ -235,13 +287,22 @@ class Importar(Dialogo):
     def __init__(self, app: "Aplicacao") -> None:
         super().__init__(app, "Importar legado")
         self.analise: Analise | None = None
-        self.origem = self.campo("Arquivo", str(LEGADO))
+        self.origem = self.campo("Arquivo", app.config.ultimo_import or str(caminho_legado_padrao()))
         ttk.Button(self.corpo, text="Escolher…", command=self.escolher).grid(row=0, column=2)
         self.relatorio = ttk.Label(self.corpo, wraplength=460,
                                    text="Analise o arquivo para começar.")
         self.relatorio.grid(row=self.linha, column=0, columnspan=3, sticky="w", pady=8)
         self.linha += 1
         self.acoes(("Analisar", self.analisar), ("Importar", self.importar))
+        self.caminho = tk.StringVar(self, value=self.origem.get())
+        self.origem.configure(textvariable=self.caminho)
+        self.caminho.trace_add("write", self.invalidar)
+        self.invalidar()
+
+    def invalidar(self, *_) -> None:
+        self.analise = None
+        self.botoes["Importar"].state(["disabled"])
+        self.relatorio.configure(text="Analise o arquivo para começar.")
 
     def escolher(self) -> None:
         """Preenche a origem a partir do seletor."""
@@ -254,11 +315,12 @@ class Importar(Dialogo):
 
     def analisar(self) -> None:
         """Exibe o resumo e a detecção de importação anterior."""
-        self.analise = None
+        self.invalidar()
         analise = analisar(Path(self.origem.get()))
         aviso = " Este arquivo já foi importado." if analise.repetida(self.app.cofre) else ""
         self.relatorio.configure(text=analise.resumo(self.app.cofre.buscar("")) + aviso)
         self.analise = analise
+        self.botoes["Importar"].state(["!disabled"])
 
     def importar(self) -> None:
         """Preserva o original e informa contagens após a gravação."""
@@ -272,8 +334,10 @@ class Importar(Dialogo):
         if not self.app.confirmar(aviso + "\n\n" + resumo, self):
             return
         copia = importar(a, self.app.cofre, permitir_repetida=repetida)
+        self.app.config.ultimo_import = str(a.origem)
         self.fechar()
         self.app.atualizar()
+        self.app.config.salvar(self.app.disco.pasta)
         self.app.status(f"Importadas: {len(a.contas)}.")
         messagebox.showinfo("Importação concluída",
                             f"Importadas: {len(a.contas)}. {resumo}\nBackup: {copia}\n"
