@@ -1,0 +1,8 @@
+﻿{"accounts": [
+  {"service":"Café fictício","email":"teste@exemplo.invalid","password":"SENHA-FAKE-123","campo":"literal } { e \"aspas\""}
+  {"service":"Teste 2","username":"beta","email":"reserva","pin":"0000"}
+  {"service":"Teste 3","id":123,"key":"CHAVE-FAKE","info":{"a":1}},
+  {"service":"Teste 4","user":"delta","code":"COD-FAKE"},
+  {"service":"Teste 4","user":"delta","code":"OUTRO-FAKE"},
+  42
+]}
